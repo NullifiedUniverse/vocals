@@ -58,8 +58,8 @@ The package `daftdsp/` is one module per DSP stage:
 | `biquad.py`   | RBJ-cookbook biquad coefficients; Direct-Form-II-Transposed recursion; **exact transfer-function filtering via FFT** for speed; parallel band-bank |
 | `synth.py`    | Polyphonic carrier: detuned super-saws + PWM pulses, PolyBLEP band-limiting, ±1 octave layering, vibrato, and crossfaded chord **progressions** |
 | `pitch.py`    | **YIN** fundamental-frequency tracking + musical scale quantisation |
-| `psola.py`    | **TD-PSOLA** hard auto-tune — pitch-synchronous overlap-add, formant-preserving, near-zero retune time |
-| `vocoder.py`  | 32-band channel vocoder: band-pass split, full-wave-rectify + low-pass envelope, carrier gating, sibilance path |
+| `psola.py`    | **TD-PSOLA** formant-preserving pitch shift — sings the voice onto a **melody** (a note per syllable, Vocaloid-style) or snaps it to a scale |
+| `vocoder.py`  | 32-band channel vocoder: band-pass split, rectify + low-pass envelope, carrier gating, carrier **whitening** (intelligibility) + consonant/air path |
 | `formant.py`  | Talkbox: resonant vowel formant peaks (F1–F3), formant shift, vowel morphing |
 | `effects.py`  | `tanh` saturation · 4–8 all-pass LFO phaser · kick + sidechain compressor · Schroeder/Moorer stereo **reverb** · 150 Hz HP / 6 kHz shelf EQ · Haas stereo widener |
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
@@ -77,6 +77,18 @@ hand from the coefficients — and applying it with a single FFT (`biquad.biquad
 mathematically identical; the FFT path just removes the Python per-sample loop so
 a full render stays interactive on the server. `numpy.fft` is used purely as a
 math primitive.
+
+## Intelligibility & melody
+
+To keep the words clear and human-sounding (rather than a smeared robot), the
+default signal path leads with the **formant-preserving PSOLA voice**: it takes
+real synthesized speech and pitch-shifts it onto a **melody** — one note per
+syllable — so it *sings* while staying articulate. The channel vocoder is mixed
+*underneath* as a robot layer, with its carrier **whitened** (`whiten`) so the
+voice's spectral shape, not the synth's, drives the output. The static
+vowel-formant *talkbox* and the phaser are **off by default** because they blur
+consonants; turn them on per taste. Blend the two layers with `dry_voice_mix`
+(clear voice) vs `vocoder_mix` (robot).
 
 ## HTTP API
 
@@ -98,15 +110,17 @@ curl -X POST localhost:8000/api/synthesize \
 All of these are exposed as sliders/toggles and accepted by the API (see
 `daftdsp/engine.py::EngineParams` for defaults and ranges):
 
-- **Voice/TTS** — `text`, `voice`, `wpm`, `tts_pitch`
-- **Auto-tune** — `enable_autotune`, `key_root`, `scale`, `retune`, `retune_time_ms`
+- **Voice/TTS** — `text`, `voice` (e.g. `en+f3` female, `en+m3` male), `wpm`, `tts_pitch`
+- **Auto-tune / melody** — `enable_autotune`, `melody` (e.g. `["A3","C4","E4"]`,
+  blank = scale-snap), `melody_gap_ms`, `key_root`, `scale`, `retune`,
+  `retune_time_ms` (glide)
 - **Carrier synth** — `chord_root`, `chord_quality`, `chord_prog` (progression,
   e.g. `["A3:min7","F3:maj7"]`), `saw_level`, `pulse_level`, `pulse_width`,
   `pwm_rate`, `pwm_depth`, `detune_cents`, `detune_voices`, `octave_layer`,
   `sub_level`, `vibrato_rate`, `vibrato_depth`, `synth_level`
 - **Vocoder** — `enable_vocoder`, `n_bands`, `band_lo`, `band_hi`, `band_q`,
-  `voc_attack_ms`, `voc_release_ms`, `formant_shift`, `sibilance`,
-  `vocoder_mix`, `dry_voice_mix`
+  `whiten` (clarity), `voc_attack_ms`, `voc_release_ms`, `formant_shift`,
+  `sibilance`, `vocoder_mix`, `dry_voice_mix`
 - **Formant/talkbox** — `enable_talkbox`, `vowel`, `vowel2`, `morph_rate`,
   `formant_shift`, `formant_resonance`, `formant_gain_db`, `talkbox_amount`
 - **Saturation** — `enable_saturation`, `sat_drive`, `sat_mix`

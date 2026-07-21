@@ -72,8 +72,11 @@ def _envelope_follow(rect, sr, atk_ms, rel_ms):
 
 def vocode(modulator, carrier, sr, *, n_bands=32, f_lo=100.0, f_hi=10000.0,
            band_q=7.0, attack_ms=3.0, release_ms=18.0, formant_shift=1.0,
-           sibilance=0.35, level=1.0, method="fft"):
-    """Run the channel vocoder and return a mono signal the length of ``carrier``."""
+           sibilance=0.35, whiten=0.0, level=1.0, method="fft"):
+    """Run the channel vocoder and return a mono signal the length of ``carrier``.
+
+    ``whiten`` (0..1) flattens the carrier's own spectrum so the voice drives the
+    output -- the main control for intelligibility."""
     n = min(len(modulator), len(carrier))
     if n == 0:
         return np.zeros(0, dtype=np.float32)
@@ -88,28 +91,39 @@ def vocode(modulator, carrier, sr, *, n_bands=32, f_lo=100.0, f_hi=10000.0,
                           band_q, attack_ms, release_ms)
     else:
         out = _vocode_fft(modulator, carrier, freqs, car_freqs, sr,
-                          band_q, release_ms)
+                          band_q, release_ms, whiten)
 
     out = out[:n]
-    # Unvoiced-consonant path: high-band voice energy modulates *band-limited*
-    # noise (breath/air, ~3.5-9 kHz), gated so it only appears on real
-    # consonants -- not the harsh full-band hiss of the first version.
+    # Unvoiced-consonant path: high-band voice energy modulates band-limited
+    # noise (~2.5-10 kHz) so consonants (s/sh/t/f) survive the tonal carrier.
+    # A light gate keeps steady hiss out without swallowing the consonants.
     if sibilance > 0.0:
-        hp = biquad_fft(highpass(4000.0, sr, 0.7), modulator)
-        s_env = one_pole_lp_fft(np.abs(hp), sr, 45.0)
-        floor = 0.06 * float(np.max(s_env)) if out.size else 0.0
-        s_env = np.maximum(s_env - floor, 0.0)          # noise gate
+        hp = biquad_fft(highpass(2800.0, sr, 0.7), modulator)
+        s_env = one_pole_lp_fft(np.abs(hp), sr, 55.0)
+        floor = 0.03 * float(np.max(s_env)) if out.size else 0.0
+        s_env = np.maximum(s_env - floor, 0.0)
+        out = normalize_percentile(out, target=0.7)
         air = np.random.default_rng(7).standard_normal(n)
-        air = biquad_fft([highpass(3500.0, sr, 0.7), lowpass(9000.0, sr, 0.7)], air)
-        out = out + sibilance * 1.6 * s_env * air
+        air = biquad_fft([highpass(2500.0, sr, 0.7), lowpass(10000.0, sr, 0.7)], air)
+        s_env = s_env / (float(np.max(s_env)) or 1.0)   # normalise consonant gain
+        out = out + sibilance * 0.5 * s_env * air
+        return (out * level).astype(np.float32)
 
-    out = normalize_percentile(out, target=0.9)
+    out = normalize_percentile(out, target=0.8)
     return (out * level).astype(np.float32)
 
 
-def _vocode_fft(modulator, carrier, freqs, car_freqs, sr, band_q, release_ms):
+def _lp_response(omega, sr, fc):
+    a = np.exp(-2.0 * np.pi * max(1.0, fc) / sr)
+    return (1.0 - a) / (1.0 - a * np.exp(-1j * omega))
+
+
+def _vocode_fft(modulator, carrier, freqs, car_freqs, sr, band_q, release_ms,
+                whiten):
     """Frequency-domain vocoder: apply each band's exact biquad response via FFT,
-    then a one-pole low-pass on the rectified voice bands for the envelope."""
+    take the rectified+low-passed voice envelope per band, optionally *whiten* the
+    carrier (flatten each band's own level so the voice -- not the synth's
+    spectrum -- shapes the output), multiply and sum."""
     n = modulator.size
     # Guard band so circular wrap doesn't leak, rounded up to a power of two so
     # the FFT stays fast (numpy is slow on awkward composite lengths).
@@ -126,15 +140,23 @@ def _vocode_fft(modulator, carrier, freqs, car_freqs, sr, band_q, release_ms):
     mod_bands = np.fft.irfft(m_fft * h_mod, nfft, axis=1)[:, :n]   # (bands, n)
     car_bands = np.fft.irfft(c_fft * h_car, nfft, axis=1)[:, :n]
 
-    # Envelope = |voice band| low-passed.  One-pole LP applied in the FFT domain.
-    fc = 1000.0 / max(1.0, release_ms)            # ms -> approx cutoff Hz
-    a = np.exp(-2.0 * np.pi * fc / sr)
-    z1 = np.exp(-1j * omega)
-    h_lp = (1.0 - a) / (1.0 - a * z1)
+    # Voice envelope: |band| low-passed (cutoff from release time).
+    h_lp = _lp_response(omega, sr, 1000.0 / max(1.0, release_ms))
     rect = np.abs(mod_bands)
-    r_fft = np.fft.rfft(rect, nfft, axis=1)
-    env = np.fft.irfft(r_fft * h_lp[None, :], nfft, axis=1)[:, :n]
+    env = np.fft.irfft(np.fft.rfft(rect, nfft, axis=1) * h_lp[None, :],
+                       nfft, axis=1)[:, :n]
     env = np.maximum(env, 0.0)
+
+    # Whiten the carrier: divide each band by its own (slowly-tracked) level so
+    # every band carries similar energy and the voice fully drives the spectrum.
+    if whiten > 0.0:
+        h_slow = _lp_response(omega, sr, 22.0)
+        c_amp = np.abs(car_bands)
+        c_env = np.fft.irfft(np.fft.rfft(c_amp, nfft, axis=1) * h_slow[None, :],
+                             nfft, axis=1)[:, :n]
+        floor = 0.12 * float(np.max(c_env)) if c_env.size else 1.0
+        c_env = np.maximum(c_env, max(floor, 1e-6))
+        car_bands = car_bands / (c_env ** float(np.clip(whiten, 0.0, 1.0)))
 
     return np.sum(car_bands * env, axis=0)
 

@@ -31,7 +31,8 @@ app = Flask(__name__, static_folder=WEB_DIR, static_url_path="/static")
 
 CHORD_QUALITIES = ["major", "minor", "maj7", "min7", "dom7", "sus2", "sus4",
                    "power", "min9", "add9"]
-VOICES = ["en", "en-us", "en-gb", "en+m3", "en+f3", "en+croak", "en+whisper"]
+VOICES = ["en+f3", "en+f4", "en+f2", "en+m2", "en+m3", "en", "en-us", "en-gb",
+          "en+croak", "en+whisper"]
 
 
 @app.get("/")

@@ -28,16 +28,20 @@ class EngineParams:
 
     # --- Voice / TTS ---
     text: str = "we are the robots"
-    wpm: int = 150
-    tts_pitch: int = 35
-    voice: str = "en"
+    wpm: int = 132
+    tts_pitch: int = 62
+    voice: str = "en+f3"        # clearer, higher formants (more singable)
 
-    # --- Auto-tune (PSOLA) ---
+    # --- Auto-tune (PSOLA) / melody ---
     enable_autotune: bool = True
     retune: float = 1.0
-    retune_time_ms: float = 1.5
-    key_root: int = 9           # 0=C ... 9=A
+    retune_time_ms: float = 26.0
+    key_root: int = 9           # 0=C ... 9=A  (used when no melody is set)
     scale: str = "minor"
+    # Sung melody: successive notes are placed on successive syllables.  Empty
+    # falls back to snapping the speech pitch to `scale`.
+    melody: list = field(default_factory=lambda: ["A3", "C4", "E4", "G4", "E4", "C4"])
+    melody_gap_ms: float = 70.0
 
     # --- Carrier synth ---
     chord_root: str = "A3"
@@ -61,16 +65,17 @@ class EngineParams:
     n_bands: int = 32
     band_lo: float = 100.0
     band_hi: float = 10000.0
-    band_q: float = 6.0
-    voc_attack_ms: float = 4.0
-    voc_release_ms: float = 22.0
+    band_q: float = 5.0
+    voc_attack_ms: float = 3.0
+    voc_release_ms: float = 13.0
     formant_shift: float = 1.0
-    sibilance: float = 0.18
-    vocoder_mix: float = 1.0
-    dry_voice_mix: float = 0.0
+    whiten: float = 0.7          # flatten carrier spectrum -> intelligibility
+    sibilance: float = 0.35
+    vocoder_mix: float = 0.5     # robot layer, blended UNDER the clear voice
+    dry_voice_mix: float = 0.62  # the intelligible, formant-preserved voice leads
 
-    # --- Formant / talkbox ---
-    enable_talkbox: bool = True
+    # --- Formant / talkbox (off by default: fixed vowels smear real speech) ---
+    enable_talkbox: bool = False
     vowel: str = "a"
     vowel2: str = ""
     morph_rate: float = 0.0
@@ -80,11 +85,11 @@ class EngineParams:
 
     # --- Saturation ---
     enable_saturation: bool = True
-    sat_drive: float = 1.4
-    sat_mix: float = 0.4
+    sat_drive: float = 1.2
+    sat_mix: float = 0.25
 
-    # --- Phaser ---
-    enable_phaser: bool = True
+    # --- Phaser (off by default: it smears consonants) ---
+    enable_phaser: bool = False
     phaser_rate: float = 0.28
     phaser_depth: float = 0.35
     phaser_stages: int = 6
@@ -101,7 +106,7 @@ class EngineParams:
 
     # --- Reverb ---
     enable_reverb: bool = True
-    reverb_mix: float = 0.22
+    reverb_mix: float = 0.14
     reverb_size: float = 0.6
     reverb_damp: float = 0.5
     reverb_width: float = 1.0
@@ -110,10 +115,10 @@ class EngineParams:
     enable_eq: bool = True
     eq_hp: float = 150.0
     eq_shelf_freq: float = 6000.0
-    eq_shelf_db: float = 2.5
-    haas_ms: float = 18.0
-    width: float = 1.15
-    warmth_hz: float = 11000.0
+    eq_shelf_db: float = 2.0
+    haas_ms: float = 14.0
+    width: float = 1.1
+    warmth_hz: float = 12000.0
     output_gain: float = 1.0
 
     @classmethod
@@ -164,15 +169,27 @@ def process(params: EngineParams, vocal=None, chord_midi=None, kick=None):
     n = vocal.size
     meta["duration_s"] = round(n / sr, 3)
 
-    # 2) Pitch tracking + PSOLA hard auto-tune.
+    # 2) Pitch tracking + formant-preserving PSOLA.  With a melody the voice is
+    #    *sung* onto those notes (syllable by syllable); otherwise the speech
+    #    pitch is snapped to the scale.
     corrected = vocal
     if params.enable_autotune and params.retune > 0:
         track = pitch.track_pitch(vocal, sr)
         voiced = track.f0[track.voiced]
         meta["median_f0"] = round(float(np.median(voiced)), 1) if voiced.size else 0.0
+        target = None
+        if params.melody:
+            mel = [util.note_to_midi(m) if isinstance(m, str) else int(m)
+                   for m in params.melody]
+            meta["melody"] = list(params.melody)
+            target = psola.melody_target(
+                track, sr, n, mel, gap_ms=params.melody_gap_ms,
+                vibrato_rate=params.vibrato_rate,
+                vibrato_depth=params.vibrato_depth * 0.7)
         corrected = psola.psola_correct(
-            vocal, sr, track, key_root=params.key_root, scale=params.scale,
-            retune=params.retune, retune_time_ms=params.retune_time_ms)
+            vocal, sr, track, target_hz=target, key_root=params.key_root,
+            scale=params.scale, retune=params.retune,
+            retune_time_ms=params.retune_time_ms)
 
     # 3) Carrier synth (static chord or a crossfaded progression).
     if chord_midi is None:
@@ -192,30 +209,30 @@ def process(params: EngineParams, vocal=None, chord_midi=None, kick=None):
         sub_level=params.sub_level, vibrato_rate=params.vibrato_rate,
         vibrato_depth=params.vibrato_depth, level=params.synth_level)
 
-    # 4) Channel vocoder (voice modulates synth).
-    if params.enable_vocoder:
-        voice = vocoder.vocode(
+    # 4) Robot layer: the whitened vocoder (voice envelope drives the synth).
+    voc = None
+    if params.enable_vocoder and params.vocoder_mix > 0:
+        voc = vocoder.vocode(
             corrected, carrier, sr, n_bands=params.n_bands, f_lo=params.band_lo,
             f_hi=params.band_hi, band_q=params.band_q,
             attack_ms=params.voc_attack_ms, release_ms=params.voc_release_ms,
-            formant_shift=params.formant_shift, sibilance=params.sibilance)
+            formant_shift=params.formant_shift, whiten=params.whiten,
+            sibilance=params.sibilance)
+        if params.enable_talkbox:
+            voc = formant.talkbox(
+                voc, sr, vowel=params.vowel, vowel2=params.vowel2,
+                morph_rate=params.morph_rate, formant_shift=params.formant_shift,
+                resonance=params.formant_resonance, gain_db=params.formant_gain_db,
+                amount=params.talkbox_amount)
+        voc = util.normalize_peak(voc, 0.9)
+
+    # 5) Blend: the clear formant-preserved voice leads, robot layer sits under.
+    dry = util.normalize_peak(corrected, 0.9)
+    if voc is not None:
+        voice = params.dry_voice_mix * dry + params.vocoder_mix * voc
     else:
-        voice = util.normalize_peak(corrected, 0.9)
-
-    # 5) Formant / talkbox colour.
-    if params.enable_talkbox:
-        voice = formant.talkbox(
-            voice, sr, vowel=params.vowel, vowel2=params.vowel2,
-            morph_rate=params.morph_rate, formant_shift=params.formant_shift,
-            resonance=params.formant_resonance, gain_db=params.formant_gain_db,
-            amount=params.talkbox_amount)
-
-    # Blend in the dry auto-tuned voice (One-More-Time-style talkbox mix).
-    voice = util.normalize_peak(voice, 0.9)
-    if params.dry_voice_mix > 0:
-        dry = util.normalize_peak(corrected, 0.9)
-        voice = (params.vocoder_mix * voice + params.dry_voice_mix * dry)
-        voice = util.normalize_peak(voice, 0.9)
+        voice = dry
+    voice = util.normalize_percentile(voice, target=0.85)
 
     # 6) Saturation -> phaser.
     if params.enable_saturation:

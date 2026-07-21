@@ -147,12 +147,14 @@ const SCHEMA=[
    ["wpm","range","Speed (wpm)",{min:80,max:260,step:5}],
    ["tts_pitch","range","Voice pitch",{min:0,max:99,step:1}],
  ]],
- ["Auto-Tune (PSOLA)","🎯",[
+ ["Auto-Tune · Melody","🎯",[
    ["enable_autotune","toggle","Auto-tune"],
+   ["melody","progression","Melody (notes, blank = scale-snap)"],
+   ["melody_gap_ms","range","Syllable gap (ms)",{min:20,max:200,step:5}],
    ["key_root","select","Key",{pairs:keyOpts}],
    ["scale","select","Scale",{opts:"scales"}],
    ["retune","range","Retune amount",{min:0,max:1,step:.01}],
-   ["retune_time_ms","range","Retune time (ms)",{min:.5,max:200,step:.5}],
+   ["retune_time_ms","range","Glide time (ms)",{min:.5,max:200,step:.5}],
  ]],
  ["Carrier Synth","🎹",[
    ["chord_root","select","Chord root",{list:roots}],
@@ -176,9 +178,10 @@ const SCHEMA=[
    ["band_lo","range","Low freq (Hz)",{min:50,max:400,step:5}],
    ["band_hi","range","High freq (Hz)",{min:4000,max:14000,step:100}],
    ["band_q","range","Band Q",{min:2,max:16,step:.1}],
+   ["whiten","range","Whiten (clarity)",{min:0,max:1,step:.01}],
    ["voc_attack_ms","range","Env attack (ms)",{min:.5,max:40,step:.5}],
    ["voc_release_ms","range","Env release (ms)",{min:2,max:120,step:1}],
-   ["sibilance","range","Sibilance / air",{min:0,max:1,step:.01}],
+   ["sibilance","range","Consonants / air",{min:0,max:1,step:.01}],
    ["vocoder_mix","range","Vocoder mix",{min:0,max:1,step:.01}],
    ["dry_voice_mix","range","Dry voice blend",{min:0,max:1,step:.01}],
  ]],
@@ -254,7 +257,7 @@ function build(){
         c.innerHTML=`<label>${lbl}</label><input type="text" class="txt" data-k="${key}"
            value="${val}" placeholder="blank = use chord root/quality above">`;
         c.querySelector("input").onchange=e=>{const s=e.target.value.trim();
-           VALS[key]=s?s.split(",").map(x=>x.trim()).filter(Boolean):[];};
+           VALS[key]=s?s.split(/[\s,]+/).map(x=>x.trim()).filter(Boolean):[];};
       }else if(type==="select"){
         const opts=optionList(cfg).map(([v,t])=>
            `<option value="${v}" ${String(VALS[key])===String(v)?'selected':''}>${t}</option>`).join("");

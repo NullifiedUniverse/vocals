@@ -66,6 +66,27 @@ def test_psola_snaps_and_preserves_length():
     assert min(abs(med - 293.66), abs(med - 311.13)) < 6, med
 
 
+def test_melody_psola_sings_target():
+    # A steady 200 Hz tone sung onto D4 (~294 Hz) via a melody target.
+    t = np.arange(SR) / SR
+    x = (0.6 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+    tr = pitch.track_pitch(x, SR)
+    tgt = psola.melody_target(tr, SR, x.size, [62])   # D4
+    out = psola.psola_correct(x, SR, tr, target_hz=tgt, retune=1.0,
+                              retune_time_ms=5.0)
+    med = float(np.median(pitch.track_pitch(out, SR).f0[
+        pitch.track_pitch(out, SR).voiced]))
+    assert abs(med - 293.66) < 8, med
+
+
+def test_vocoder_whiten_finite():
+    rng = np.random.default_rng(5)
+    mod = rng.standard_normal(6000).astype(np.float32)
+    car = synth.render_carrier(6000, SR, [57, 60, 64])
+    out = vocoder.vocode(mod, car, SR, whiten=0.8, sibilance=0.3)
+    assert out.size == 6000 and np.all(np.isfinite(out))
+
+
 def test_synth_polyphony_length_and_finite():
     car = synth.render_carrier(SR, SR, [57, 60, 64], detune_voices=3)
     assert car.size == SR
