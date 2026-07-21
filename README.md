@@ -44,10 +44,14 @@ python examples/render_demo.py "harder better" --all        # render every prese
 
 ### Make it sing (Vocaloid / Miku-style)
 
-`daftdsp/singing.py` turns a `(syllable, note, beats)` score into a sung vocal:
-each syllable is spoken by espeak, pitch-shifted onto its note with formants
-preserved, and its vowel is loop-sustained to the note length, then given
-vibrato, chorus and a bright reverb. Pitch lands within ~15 cents.
+`daftdsp/singing.py` turns a `(syllable, note, beats)` score into a sung vocal.
+Each syllable is given to espeak as **phonemes** (`[[...]]`, so it's pronounced
+correctly out of word context), pitch-shifted onto its note with formants
+preserved, then held for the note's duration by **pitch-synchronous overlap-add
+of the vowel nucleus** (a smooth held vowel, not a repeated syllable). Held notes
+get **vibrato that swells in**, consecutive notes get **legato pitch-glides**, and
+a chorus + bright reverb finish it. Pitch lands within ~8 cents. Get phonemes for
+any words with `espeak-ng -q -x "your text"`.
 
 ```bash
 python examples/sing_demo.py            # render every song in daftdsp/songs.py
@@ -77,8 +81,8 @@ The package `daftdsp/` is one module per DSP stage:
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
-| `singing.py`  | Note-timed **singing** synth: pitch + vowel-sustain each syllable onto a melody; vibrato / chorus / bright chain (Miku-style) |
-| `songs.py`    | Example scores (`(syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
+| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input per note (correct pronunciation), formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain** (smooth held notes), swelling vibrato, legato glides, bright chorus/reverb chain (Miku-style) |
+| `songs.py`    | Example scores (`(phoneme-syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
 
 ### A note on speed
 

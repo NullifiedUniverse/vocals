@@ -32,7 +32,8 @@ def main():
         s = SONGS[name]
         t0 = time.time()
         audio = singing.render_song(s["score"], sr=args.sr, bpm=s["bpm"],
-                                    voice=s["voice"], base_pitch=s["base_pitch"])
+                                    voice=s["voice"], base_pitch=s["base_pitch"],
+                                    phoneme=s.get("phoneme", False))
         path = os.path.join(args.outdir, f"miku_{name}.wav")
         with open(path, "wb") as f:
             f.write(util.write_wav(audio, args.sr))

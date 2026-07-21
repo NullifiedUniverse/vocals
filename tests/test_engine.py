@@ -149,6 +149,21 @@ def test_singing_note_pitch_and_duration():
     assert abs(cents) < 70, (med, cents)
 
 
+def test_singing_long_note_flat_and_intune():
+    # A 1.4 s held note must stay in tune and NOT decay or re-trigger.
+    note = singing.render_note("l'A:", 69, 1.4, SR, phoneme=True, vib_depth=0.0)
+    tr = pitch.track_pitch(note, SR, max_f0=1000.0)
+    voiced = tr.f0[tr.voiced]
+    med = float(np.median(voiced)) if voiced.size else 0.0
+    assert abs(1200 * np.log2(med / 440.0)) < 40           # in tune
+    # Sustain body energy should be roughly flat (no big decay/tremolo).
+    ch = int(0.05 * SR)
+    rms = np.array([np.sqrt(np.mean(note[i:i + ch] ** 2))
+                    for i in range(0, note.size - ch, ch)])
+    body = rms[3:-3][rms[3:-3] > 1e-3]
+    assert body.size and np.std(body) / np.mean(body) < 0.3   # flat sustain
+
+
 def test_singing_song_renders():
     score = [("do", "C4", 1), ("mi", "E4", 1), ("sol", "G4", 2)]
     out = singing.render_song(score, sr=SR, bpm=140)
