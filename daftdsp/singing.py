@@ -1,19 +1,20 @@
 """
-Note-timed singing synthesis -- "make it sing".
+Note-timed singing synthesis -- "make it sing", with musical flow.
 
-Turns a score of ``(syllable, note, beats)`` into a sung vocal.  Two things make
-it sound like a voice rather than chopped speech:
+A ``(syllable, note, beats)`` score becomes a sung vocal.  What makes it sound
+like phrasing rather than beeps:
 
-  * **Phoneme input.**  Each syllable is given to espeak as phonemes (``[[...]]``)
-    so it is pronounced correctly out of word context -- no more "kle"/"der"
-    mispronunciations.
-  * **Vowel-nucleus sustain.**  To hold a long note, a *few pitch periods* of the
-    vowel's steady centre are cross-fade-looped and spliced back into the vowel,
-    keeping the natural consonant onset and tail.  The note sustains as one held
-    vowel instead of the whole syllable repeating.
+  * **Phoneme input** -- each syllable is given to espeak as ``[[...]]`` so it is
+    pronounced correctly out of word context.
+  * **Vowel-nucleus sustain** -- long notes hold the vowel's steady centre with
+    pitch-synchronous overlap-add (smooth, no decay, no syllable-repeat).
+  * **Continuous phrases** -- within a breath (between rests) notes are cross-
+    faded into one continuous line, mid-phrase syllable-final consonants are
+    dropped so the vowels *connect*, and a single dynamic envelope arcs over the
+    phrase (crescendo toward the peak, taper at the end) for expression.
+  * **Legato glides**, **vibrato that swells in**, and light humanised timing.
 
-Pitch comes from formant-preserving PSOLA; vibrato and chorus are modulated
-fractional delays.  All from-scratch.
+All from-scratch (PSOLA, biquads, modulated fractional delays with cubic interp).
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ from .util import midi_to_freq, note_to_midi
 
 
 # ---------------------------------------------------------------------------
-# Cross-fade / loop helpers (equal-power)
+# helpers
 # ---------------------------------------------------------------------------
 
 def _xfade(a, b, xf):
@@ -38,92 +39,18 @@ def _xfade(a, b, xf):
     if xf <= 1:
         return np.concatenate([a, b])
     ramp = np.linspace(0.0, 1.0, xf)
-    fade_out = np.cos(0.5 * np.pi * ramp)
-    fade_in = np.sin(0.5 * np.pi * ramp)
-    mid = a[-xf:] * fade_out + b[:xf] * fade_in
+    mid = a[-xf:] * np.cos(0.5 * np.pi * ramp) + b[:xf] * np.sin(0.5 * np.pi * ramp)
     return np.concatenate([a[:-xf], mid, b[xf:]])
 
 
 def _energy(x, win):
-    """Smoothed short-time energy (box filter of x^2)."""
     p = np.asarray(x, dtype=np.float64) ** 2
     k = np.ones(max(1, win)) / max(1, win)
     return np.convolve(p, k, mode="same")
 
 
-def _sustain(x, sr, f0, length):
-    """Hold ``x`` to ``length`` samples with pitch-synchronous overlap-add.
-
-    Hann grains (two target-periods long) are laid down at exact target-period
-    spacing, so the output pitch is exact and the sustain is click-free.  The
-    read pointer copies the consonant onset 1:1, then scans *slowly* through the
-    vowel (a natural sustain, not a repeat); the consonant tail is appended at
-    the end."""
-    x = np.asarray(x, dtype=np.float64)
-    n = x.size
-    if length <= n:
-        return x[:length].copy()
-
-    period = max(4, int(round(sr / max(1.0, f0))))
-    win = 2 * period
-    w = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(win) / win)
-
-    # Vowel nucleus (peak energy in the first ~70%): loud, steady point to hold.
-    e = _energy(x, period)
-    peak = int(np.argmax(e[:max(2 * period, int(n * 0.7))]))
-    onset = int(np.clip(peak - 2 * period, 0, n))
-    vend = int(np.clip(int(n * 0.86), onset + 2 * period, n - 1))
-    coda = x[vend:]
-    coda_len = int(min(coda.size, 0.14 * sr))
-    body_len = max(int(0.06 * sr), length - coda_len)
-    hold = int(np.clip(round(peak / period) * period, 0, n - win))
-
-    out = np.zeros(body_len + win)
-    nrm = np.zeros(body_len + win)
-    k = 0
-    while k * period < body_len:
-        op = k * period
-        # Onset consonant plays 1:1; then the vowel nucleus is held (period-
-        # aligned so grains stay phase-coherent) -> a steady, non-decaying vowel.
-        ai = op if op < onset else hold
-        ai = int(np.clip(ai, 0, n - win))
-        out[op:op + win] += x[ai:ai + win] * w
-        nrm[op:op + win] += w
-        k += 1
-    m = nrm > 1e-6
-    out[m] /= nrm[m]
-    body = out[:body_len]
-
-    if coda_len > 0:
-        note = _xfade(body, coda[:coda_len], min(period, body_len // 4,
-                                                 max(1, coda_len // 2)))
-    else:
-        note = body
-    if note.size < length:
-        note = np.pad(note, (0, length - note.size))
-    return note[:length]
-
-
-def _adsr(x, sr, a=0.016, d=0.06, s=0.88, r=0.06):
-    n = x.size
-    env = np.full(n, s, dtype=np.float64)
-    ai, di, ri = int(a * sr), int(d * sr), int(r * sr)
-    if ai > 0:
-        env[:min(ai, n)] = np.linspace(0.0, 1.0, min(ai, n))
-    if di > 0 and ai + di <= n:
-        env[ai:ai + di] = np.linspace(1.0, s, di)
-    if ri > 0 and ri < n:
-        env[-ri:] = env[-ri:] * np.linspace(1.0, 0.0, ri)
-    return (x * env).astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
-# Note / score rendering
-# ---------------------------------------------------------------------------
-
 def _read_cubic(x, read):
-    """Catmull-Rom cubic interpolation read of ``x`` at fractional positions
-    ``read`` (lower distortion than linear for the modulated delays)."""
+    """Catmull-Rom cubic interpolation read at fractional positions."""
     n = x.size
     i = np.floor(read).astype(np.int64)
     f = read - i
@@ -136,24 +63,102 @@ def _read_cubic(x, read):
                           + f * (3.0 * (p1 - p2) + p3 - p0)))
 
 
-def _vibrato(x, sr, rate, depth_cents, delay_s, ramp_s):
-    """Pitch vibrato that swells in: silent for ``delay_s``, then ramps to full
-    ``depth_cents`` over ``ramp_s`` -- how a singer actually adds vibrato."""
-    if depth_cents <= 0:
-        return x
+# ---------------------------------------------------------------------------
+# vowel sustain (pitch-synchronous overlap-add, holds the nucleus)
+# ---------------------------------------------------------------------------
+
+def _sustain(x, sr, f0, length, coda=True):
+    """Hold ``x`` to ``length`` samples.  Grains (two target-periods, Hann) are
+    laid at exact target-period spacing; the onset plays 1:1, then the vowel
+    nucleus is held (steady, no decay).  ``coda`` keeps the syllable-final
+    consonant (used at phrase ends); dropped mid-phrase so vowels connect."""
+    x = np.asarray(x, dtype=np.float64)
+    n = x.size
+    if length <= n and not coda:
+        return x[:length].copy()
+
+    period = max(4, int(round(sr / max(1.0, f0))))
+    win = 2 * period
+    w = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(win) / win)
+
+    e = _energy(x, period)
+    peak = int(np.argmax(e[:max(2 * period, int(n * 0.7))]))
+    onset = int(np.clip(peak - 2 * period, 0, n))
+    vend = int(np.clip(int(n * 0.86), onset + 2 * period, n - 1))
+    coda_seg = x[vend:]
+    coda_len = int(min(coda_seg.size, 0.13 * sr)) if coda else 0
+    body_len = max(int(0.05 * sr), length - coda_len)
+    hold = int(np.clip(round(peak / period) * period, 0, n - win))
+
+    out = np.zeros(body_len + win)
+    nrm = np.zeros(body_len + win)
+    k = 0
+    while k * period < body_len:
+        op = k * period
+        ai = op if op < onset else hold
+        ai = int(np.clip(ai, 0, n - win))
+        out[op:op + win] += x[ai:ai + win] * w
+        nrm[op:op + win] += w
+        k += 1
+    m = nrm > 1e-6
+    out[m] /= nrm[m]
+    body = out[:body_len]
+
+    if coda_len > 0:
+        note = _xfade(body, coda_seg[:coda_len],
+                      min(period, body_len // 4, max(1, coda_len // 2)))
+    else:
+        note = body
+    if note.size < length:
+        note = np.pad(note, (0, length - note.size))
+    return note[:length]
+
+
+def _smooth_noise(rng, n, sr, ms):
+    """Zero-mean, unit-std smooth random signal (a slow drift)."""
+    x = rng.standard_normal(n)
+    w = max(1, int(sr * ms / 1000.0))
+    x = np.convolve(x, np.ones(w) / w, mode="same")
+    s = np.std(x)
+    return x / s if s > 1e-9 else x
+
+
+def _expression(x, sr, rng, vib_rate, vib_depth, vib_delay, ramp_s,
+                flutter_cents=6.0, shimmer=0.045):
+    """Add human pitch/amplitude life: vibrato that swells in, plus small random
+    pitch *jitter* (flutter) and amplitude *shimmer* -- what separates a real
+    voice from a frozen synth tone.  Pitch is modulated exactly via a resampling
+    read-index, not an approximate delay."""
     n = x.size
     t = np.arange(n)
-    env = np.clip((t / sr - delay_s) / max(1e-3, ramp_s), 0.0, 1.0)
-    amp_s = depth_cents * np.log(2.0) / 1200.0 / (2.0 * np.pi * max(0.1, rate))
-    d = amp_s * sr * env * np.sin(2.0 * np.pi * rate * t / sr)
-    return _read_cubic(x, np.clip(t - d, 0.0, n - 1)).astype(np.float32)
+    cents = np.zeros(n)
+    if vib_depth > 0:
+        env = np.clip((t / sr - vib_delay) / max(1e-3, ramp_s), 0.0, 1.0)
+        cents += vib_depth * env * np.sin(2.0 * np.pi * vib_rate * t / sr)
+    if flutter_cents > 0:
+        cents += flutter_cents * _smooth_noise(rng, n, sr, 120.0)
 
+    ratio = 2.0 ** (cents / 1200.0) - 1.0
+    ratio -= float(np.mean(ratio))                 # zero-mean -> no time drift
+    read = np.cumsum(1.0 + ratio)
+    read = np.clip(read - read[0], 0.0, n - 1)
+    y = _read_cubic(x.astype(np.float64), read)
+    if shimmer > 0:
+        y = y * (1.0 + shimmer * _smooth_noise(rng, n, sr, 90.0))
+    return y.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# note rendering
+# ---------------------------------------------------------------------------
 
 def render_note(syllable, midi, dur_s, sr, voice="en+f4", base_pitch=62,
-                phoneme=True, wpm=150, prev_midi=None, glide_ms=38.0,
-                vib_rate=5.7, vib_depth=32.0, vib_delay=0.32):
-    """Synthesize one sung note: pronounce the syllable, glide/pitch it to
-    ``midi``, hold it for ``dur_s`` seconds, and add swelling vibrato."""
+                phoneme=True, wpm=150, prev_midi=None, glide_ms=55.0,
+                vib_rate=5.8, vib_depth=34.0, vib_delay=0.30, coda=True,
+                attack_ms=6.0):
+    """Render one note: pronounce the syllable, glide/pitch it to ``midi``, hold
+    it for ``dur_s`` seconds, add swelling vibrato.  No release fade -- phrase
+    assembly handles joins and dynamics."""
     text = f"[[{syllable}]]" if phoneme else syllable
     raw = tts.text_to_vocal(text, sr, voice=voice, pitch=base_pitch, wpm=wpm)
     if raw.size < int(0.05 * sr):
@@ -162,53 +167,121 @@ def render_note(syllable, midi, dur_s, sr, voice="en+f4", base_pitch=62,
     track = pitch.track_pitch(raw, sr, max_f0=1000.0)
     f0 = midi_to_freq(midi)
 
-    # Legato: glide from the previous note's pitch over the first few ms.
     target = np.full(raw.size, f0)
     if prev_midi is not None and glide_ms > 0:
-        g = min(int(glide_ms / 1000.0 * sr), raw.size // 2)
+        # Glide length grows a little with interval, capped -- legato portamento.
+        semis = abs(midi - prev_midi)
+        g = int(min(glide_ms * (1.0 + 0.05 * semis), 120.0) / 1000.0 * sr)
+        g = min(g, raw.size // 2)
         if g > 1:
             pf = midi_to_freq(prev_midi)
-            target[:g] = pf * (f0 / pf) ** np.linspace(0.0, 1.0, g)  # log glide
+            target[:g] = pf * (f0 / pf) ** np.linspace(0.0, 1.0, g)
 
     pitched = psola.psola_correct(raw, sr, track, target_hz=target, retune=1.0,
                                   retune_time_ms=6.0, max_f0=1300.0)
     length = max(int(dur_s * sr), int(0.09 * sr))
-    note = _adsr(_sustain(pitched, sr, f0, length), sr)
-    return _vibrato(note, sr, vib_rate, vib_depth, vib_delay, 0.32)
+    note = _sustain(pitched, sr, f0, length, coda=coda)
+
+    a = int(attack_ms / 1000.0 * sr)
+    if 0 < a < note.size:
+        note[:a] *= np.linspace(0.0, 1.0, a)      # anti-click attack only
+    rng = np.random.default_rng(int(abs(midi) * 131 + length) % (2 ** 31))
+    note = _expression(note, sr, rng, vib_rate, vib_depth, vib_delay, 0.32)
+    return note.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# phrase assembly (continuous, expressive)
+# ---------------------------------------------------------------------------
+
+def _render_phrase(phrase, sr, voice, base_pitch, phoneme, xf, rng, note_kw):
+    """Render one breath-phrase (list of (syllable, midi, dur, start)) into a
+    continuous, dynamically-shaped buffer.  Returns (buffer, phrase_start)."""
+    n = len(phrase)
+    pstart = phrase[0][3]
+    pitches = [m for _, m, _, _ in phrase]
+    pmin, pmax = min(pitches), max(pitches)
+
+    audios, centers, louds = [], [], []
+    prev = None
+    for k, (syl, midi, dur, st) in enumerate(phrase):
+        last = k == n - 1
+        a = render_note(syl, midi, dur + xf / sr, sr, voice, base_pitch,
+                        phoneme=phoneme, prev_midi=prev, coda=last, **note_kw)
+        ramp = np.linspace(0.0, 1.0, xf)
+        if k > 0:
+            a[:xf] *= np.sin(0.5 * np.pi * ramp)          # crossfade in
+        if not last:
+            a[-xf:] *= np.cos(0.5 * np.pi * ramp)         # crossfade out
+        else:
+            rel = min(int(0.16 * sr), a.size)
+            a[-rel:] *= np.linspace(1.0, 0.0, rel) ** 1.4  # phrase release
+        audios.append(a)
+        # Expressive dynamics: higher notes and the phrase middle sing louder.
+        pn = (midi - pmin) / (pmax - pmin) if pmax > pmin else 0.5
+        arc = np.sin(np.pi * (k + 0.5) / n)
+        louds.append(0.66 + 0.17 * pn + 0.17 * arc)
+        centers.append((st - pstart + dur * 0.5) * sr)
+        prev = midi
+
+    end = phrase[-1][3] - pstart + phrase[-1][2]
+    buf = np.zeros(int(end * sr) + xf + int(0.25 * sr))
+    for k, (syl, midi, dur, st) in enumerate(phrase):
+        jitter = int(rng.normal(0.0, 0.004) * sr) if k > 0 else 0   # ~4ms timing
+        pos = max(0, int((st - pstart) * sr) + jitter)
+        a = audios[k]
+        e = min(buf.size, pos + a.size)
+        buf[pos:e] += a[:e - pos]
+
+    # Smooth dynamic envelope from per-note loudness + phrase fade-in.
+    xs = np.arange(buf.size)
+    dyn = np.interp(xs, np.array(centers), np.array(louds),
+                    left=louds[0], right=louds[-1])
+    at = min(int(0.03 * sr), buf.size)
+    dyn[:at] *= np.linspace(0.0, 1.0, at)
+    buf *= dyn
+    return buf.astype(np.float32), pstart
 
 
 def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=62, phoneme=True,
-         legato=0.05, **note_kw):
-    """Render a whole score to a dry mono sung line (with legato glides)."""
+         crossfade_ms=24.0, seed=7, **note_kw):
+    """Render a whole score to a continuous, phrased mono sung line."""
     beat = 60.0 / bpm
-    total = sum(b for _, _, b in score) * beat
-    out = np.zeros(int(total * sr) + int(0.5 * sr), dtype=np.float64)
-    t = 0.0
-    prev_midi = None
+    notes, t = [], 0.0
     for syllable, note, beats in score:
         dur = beats * beat
         if note is None or syllable in (None, "", "rest", "-"):
-            t += dur
-            prev_midi = None                     # rest breaks the legato
-            continue
-        midi = note_to_midi(note)
-        audio = render_note(syllable, midi, dur + legato * beat, sr, voice,
-                            base_pitch, phoneme=phoneme, prev_midi=prev_midi,
-                            **note_kw)
-        pos = int(t * sr)
-        end = min(out.size, pos + audio.size)
-        out[pos:end] += audio[:end - pos]
+            notes.append(("rest", None, dur, t))
+        else:
+            notes.append((syllable, note_to_midi(note), dur, t))
         t += dur
-        prev_midi = midi
-    return out[:int(t * sr) + int(0.4 * sr)].astype(np.float32)
+    total = t
+
+    out = np.zeros(int(total * sr) + sr)
+    xf = int(crossfade_ms / 1000.0 * sr)
+    rng = np.random.default_rng(seed)
+    i = 0
+    while i < len(notes):
+        if notes[i][0] == "rest":
+            i += 1
+            continue
+        j = i
+        while j < len(notes) and notes[j][0] != "rest":
+            j += 1
+        buf, pstart = _render_phrase(notes[i:j], sr, voice, base_pitch, phoneme,
+                                     xf, rng, note_kw)
+        pos = int(pstart * sr)
+        e = min(out.size, pos + buf.size)
+        out[pos:e] += buf[:e - pos]
+        i = j
+    return out[:int(total * sr) + int(0.3 * sr)].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
-# Chorus (modulated fractional delays) + full render
+# chorus + full render
 # ---------------------------------------------------------------------------
 
-def chorus(x, sr, mix=0.14, voices=2, depth_ms=4.0, rate=0.45):
-    """Light detuned doubling for a thicker, synthetic-diva sheen."""
+def chorus(x, sr, mix=0.13, voices=2, depth_ms=4.0, rate=0.45):
     if mix <= 0:
         return x
     n = x.size
@@ -217,22 +290,23 @@ def chorus(x, sr, mix=0.14, voices=2, depth_ms=4.0, rate=0.45):
     for k in range(voices):
         d = (7.0 + 4.0 * k + depth_ms * np.sin(2.0 * np.pi * rate * (1.0 + 0.3 * k)
              * t / sr + 1.7 * k)) * sr / 1000.0
-        out += (mix / voices) * _read_cubic(x.astype(np.float64), np.clip(t - d, 0, n - 1))
+        out += (mix / voices) * _read_cubic(x.astype(np.float64),
+                                            np.clip(t - d, 0, n - 1))
     return out.astype(np.float32)
 
 
 def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=62,
-                phoneme=True, chorus_mix=0.13, reverb_mix=0.2, bright_db=3.5,
+                phoneme=True, chorus_mix=0.13, reverb_mix=0.22, bright_db=3.5,
                 width=1.25):
-    """Full render: sing (with per-note vibrato + legato) -> chorus -> bright EQ
-    -> stereo -> reverb."""
+    """Full render: sing (continuous, expressive) -> chorus -> bright EQ ->
+    stereo -> reverb."""
     dry = sing(score, sr, bpm, voice, base_pitch, phoneme=phoneme)
     dry = chorus(dry, sr, mix=chorus_mix)
     dry = util.normalize_peak(dry, 0.9)
     dry = effects.eq(dry, sr, hp_freq=110.0, shelf_freq=5500.0,
                      shelf_gain_db=bright_db)
     stereo = effects.stereoize(dry, sr, haas_ms=10.0, width=width)
-    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.68, damp=0.5,
+    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.48,
                             width=1.2)
     stereo = util.normalize_percentile(stereo, target=0.85)
     stereo = util.soft_limit(stereo, 0.98)

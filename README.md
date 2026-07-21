@@ -48,10 +48,14 @@ python examples/render_demo.py "harder better" --all        # render every prese
 Each syllable is given to espeak as **phonemes** (`[[...]]`, so it's pronounced
 correctly out of word context), pitch-shifted onto its note with formants
 preserved, then held for the note's duration by **pitch-synchronous overlap-add
-of the vowel nucleus** (a smooth held vowel, not a repeated syllable). Held notes
-get **vibrato that swells in**, consecutive notes get **legato pitch-glides**, and
-a chorus + bright reverb finish it. Pitch lands within ~8 cents. Get phonemes for
-any words with `espeak-ng -q -x "your text"`.
+of the vowel nucleus** (a smooth held vowel, not a repeated syllable). For flow,
+notes within a breath are **crossfaded into one continuous phrase** (mid-phrase
+syllable-final consonants are dropped so the vowels connect) under a single
+**dynamic envelope** that swells toward the phrase peak and tapers at the end.
+Expression comes from **legato pitch-glides**, **vibrato that swells in**, and
+subtle **pitch flutter + amplitude shimmer** so held notes aren't a frozen synth
+tone. Pitch lands within ~8 cents. Get phonemes for any words with
+`espeak-ng -q -x "your text"`.
 
 ```bash
 python examples/sing_demo.py            # render every song in daftdsp/songs.py
@@ -81,7 +85,7 @@ The package `daftdsp/` is one module per DSP stage:
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
-| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input per note (correct pronunciation), formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain** (smooth held notes), swelling vibrato, legato glides, bright chorus/reverb chain (Miku-style) |
+| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input, formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain**, **continuous phrasing** (crossfaded notes, connected vowels, dynamic arc), legato glides, swelling vibrato + pitch flutter + breath shimmer, bright chorus/reverb (Miku-style) |
 | `songs.py`    | Example scores (`(phoneme-syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
 
 ### A note on speed
