@@ -79,6 +79,12 @@ def _harmonic(ana, frame_of_out, f0_out, sr, block=128, seed=1):
     k = np.arange(1, max_harm + 1)
     phase0 = np.random.default_rng(seed).uniform(0, 2 * np.pi, max_harm)
 
+    # Per-frame loudness, so we can hold it constant while the vowel's formant
+    # *shape* moves (diphthongs) without the note decaying.
+    lvl = np.sqrt(np.sum(env ** 2, axis=1)) + 1e-9
+    vmask = voiced > 0.5
+    ref_lvl = float(np.median(lvl[vmask])) if np.any(vmask) else float(np.median(lvl))
+
     out = np.zeros(n_out + block)
     phase = phase0.copy()
     n_frames = env.shape[0]
@@ -95,8 +101,9 @@ def _harmonic(ana, frame_of_out, f0_out, sr, block=128, seed=1):
         # Natural glottal spectral tilt (~-8 dB/oct above 1.8 kHz) so the many
         # high harmonics don't accumulate into brightness/buzz.
         tilt = (1800.0 / np.maximum(hf, 1800.0)) ** 1.3
+        norm = ref_lvl / lvl[fi]                       # constant vowel loudness
         amp = np.zeros(max_harm)
-        amp[live] = np.interp(hf[live], freqs, env[fi]) * vc * tilt[live]
+        amp[live] = np.interp(hf[live], freqs, env[fi]) * vc * tilt[live] * norm
         if amp_prev is None:
             amp_prev = amp
         tt = np.arange(m)

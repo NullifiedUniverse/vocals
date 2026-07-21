@@ -91,12 +91,14 @@ def _f0_expression(f0_out, sr, seed):
     into the synthesis frequency."""
     n = f0_out.size
     t = np.arange(n)
-    venv = np.clip((t / sr - 0.22) / 0.35, 0.0, 1.0)
-    cents = 26.0 * venv * np.sin(2.0 * np.pi * 5.6 * t / sr)
+    # Vibrato held back until a note has settled, so each note's pitch reads
+    # clearly first (melody), then blooms.
+    venv = np.clip((t / sr - 0.33) / 0.35, 0.0, 1.0)
+    cents = 20.0 * venv * np.sin(2.0 * np.pi * 5.6 * t / sr)
     fl = np.random.default_rng(seed).standard_normal(n)
-    w = max(1, int(sr * 0.13))
+    w = max(1, int(sr * 0.14))
     fl = np.convolve(fl, np.ones(w) / w, mode="same")
-    cents += 4.5 * (fl / (np.std(fl) or 1.0))
+    cents += 3.0 * (fl / (np.std(fl) or 1.0))
     return f0_out * 2.0 ** (cents / 1200.0)
 
 
@@ -120,11 +122,18 @@ def _warp_word(raw, sr, hop, spans, notes, voiced, beat, prev_f0, glide_ms, tail
         ins = np.empty(slot)
         if onset_out > 0:
             ins[:onset_out] = np.linspace(s0, v0, onset_out)
-        cvow = 0.5 * (v0 + v1)
-        half = 0.5 * (v1 - v0)
+        # Hold the main vowel, then do the diphthong off-glide near the end (how
+        # singers sustain "I"/"how"/"out"); loudness is decoupled so no decay.
+        span = v1 - v0
+        main = v0 + 0.30 * span
+        end = v0 + 0.82 * span
+        vpath = np.full(vowel_out, main)
+        gl = min(vowel_out // 3, int(0.16 * sr))
+        if gl > 1:
+            vpath[-gl:] = np.linspace(main, end, gl)
         st = np.arange(vowel_out)
-        drift = 0.10 * half * np.sin(2.0 * np.pi * 0.6 * st / sr)   # gentle life
-        ins[onset_out:onset_out + vowel_out] = np.clip(cvow + drift, v0, v1)
+        vpath += 0.06 * span * np.sin(2.0 * np.pi * 0.5 * st / sr)   # subtle life
+        ins[onset_out:onset_out + vowel_out] = np.clip(vpath, v0, v1)
         if coda_out > 0:
             ins[onset_out + vowel_out:] = np.linspace(v1, s1, slot - onset_out - vowel_out)
         ins_parts.append(ins)
@@ -173,7 +182,7 @@ def render_word(word, notes, sr, voice, base_pitch, wpm, beat, prev_f0,
 # ---------------------------------------------------------------------------
 
 def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
-         glide_ms=55.0, crossfade_ms=16.0, seed=5):
+         glide_ms=38.0, crossfade_ms=26.0, seed=5):
     """Render a word-based score to a continuous sung mono line.
 
     Score items: ``("rest", beats)`` or ``(word, [(note, beats), ...])`` with one
