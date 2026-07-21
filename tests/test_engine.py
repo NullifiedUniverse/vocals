@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from daftdsp import EngineParams, process, util  # noqa: E402
-from daftdsp import biquad, effects, pitch, psola, synth, vocoder  # noqa: E402
+from daftdsp import biquad, effects, pitch, psola, singing, synth, vocoder  # noqa: E402
 
 SR = 44100
 
@@ -135,6 +135,24 @@ def test_params_from_dict_coercion():
     p = EngineParams.from_dict({"n_bands": "24", "enable_phaser": "false",
                                 "sat_drive": 3.5, "unknown_key": 1})
     assert p.n_bands == 24 and p.enable_phaser is False and p.sat_drive == 3.5
+
+
+def test_singing_note_pitch_and_duration():
+    # Sing "la" on A4 for ~0.6 s; check pitch and length.
+    a4 = 69
+    note = singing.render_note("la", a4, 0.6, SR, voice="en+f4", base_pitch=62)
+    assert abs(note.size / SR - 0.6) < 0.12
+    tr = pitch.track_pitch(note, SR, max_f0=1000.0)
+    voiced = tr.f0[tr.voiced]
+    med = float(np.median(voiced)) if voiced.size else 0.0
+    cents = 1200 * np.log2(med / 440.0) if med > 0 else 999
+    assert abs(cents) < 70, (med, cents)
+
+
+def test_singing_song_renders():
+    score = [("do", "C4", 1), ("mi", "E4", 1), ("sol", "G4", 2)]
+    out = singing.render_song(score, sr=SR, bpm=140)
+    assert out.ndim == 2 and out.shape[1] == 2 and np.all(np.isfinite(out))
 
 
 def test_full_engine_stereo_finite():

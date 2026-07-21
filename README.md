@@ -42,6 +42,18 @@ python examples/render_demo.py "we are the robots"          # -> renders/default
 python examples/render_demo.py "harder better" --all        # render every preset
 ```
 
+### Make it sing (Vocaloid / Miku-style)
+
+`daftdsp/singing.py` turns a `(syllable, note, beats)` score into a sung vocal:
+each syllable is spoken by espeak, pitch-shifted onto its note with formants
+preserved, and its vowel is loop-sustained to the note length, then given
+vibrato, chorus and a bright reverb. Pitch lands within ~15 cents.
+
+```bash
+python examples/sing_demo.py            # render every song in daftdsp/songs.py
+python examples/sing_demo.py twinkle    # just one  -> renders/miku_twinkle.wav
+```
+
 ### Tests
 
 ```bash
@@ -64,7 +76,9 @@ The package `daftdsp/` is one module per DSP stage:
 | `effects.py`  | `tanh` saturation · 4–8 all-pass LFO phaser · kick + sidechain compressor · Schroeder/Moorer stereo **reverb** · 150 Hz HP / 6 kHz shelf EQ · Haas stereo widener |
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
-| `presets.py`  | Ready-made parameter sets (Around The World, One More Time, …) |
+| `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
+| `singing.py`  | Note-timed **singing** synth: pitch + vowel-sustain each syllable onto a melody; vibrato / chorus / bright chain (Miku-style) |
+| `songs.py`    | Example scores (`(syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
 
 ### A note on speed
 
