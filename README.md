@@ -89,7 +89,8 @@ The package `daftdsp/` is one module per DSP stage:
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
 | `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input, formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain** (with micro-movement), **continuous phrasing** + dynamic arc, legato glides, vibrato/flutter/shimmer, plus **voice-timbre shaping** (warmth, singer's-formant ring, de-buzz, air), a **breath/aspiration** layer, and bus compression (Miku-style) |
-| `songs.py`    | Example scores (`(phoneme-syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
+| `singer.py`   | **Aria** singer (current best): speaks whole **words** naturally, then epoch-based PSOLA **warps** each syllable's vowel onto its note (slow ping-pong through the steady vowel — click-free, no loops/noise), legato glides, vibrato + flutter |
+| `songs.py`    | Example scores — phoneme-based (`SONGS`) for `singing.py`, word-based (`ARIA_SONGS`) for `singer.py` |
 
 ### A note on speed
 
