@@ -42,27 +42,33 @@ python examples/render_demo.py "we are the robots"          # -> renders/default
 python examples/render_demo.py "harder better" --all        # render every preset
 ```
 
-### Make it sing (Vocaloid / Miku-style)
+### Make it sing — the Aria voice
 
-`daftdsp/singing.py` turns a `(syllable, note, beats)` score into a sung vocal.
-Each syllable is given to espeak as **phonemes** (`[[...]]`, so it's pronounced
-correctly out of word context), pitch-shifted onto its note with formants
-preserved, then held for the note's duration by **pitch-synchronous overlap-add
-of the vowel nucleus** (a smooth held vowel, not a repeated syllable). For flow,
-notes within a breath are **crossfaded into one continuous phrase** (mid-phrase
-syllable-final consonants are dropped so the vowels connect) under a single
-**dynamic envelope** that swells toward the phrase peak and tapers at the end.
-Expression comes from **legato pitch-glides**, **vibrato that swells in**, and
-subtle **pitch flutter + amplitude shimmer** so held notes aren't a frozen synth
-tone. Finally the voice is voiced like a vocal synth: **timbre shaping** (low-mid
-warmth, a 3 kHz singer's-formant ring, taming espeak's ~4 kHz buzz, air on top —
-all chosen from espeak's measured spectrum), a **breath/aspiration** noise layer
-(heavier on note attacks), and gentle **bus compression**. Pitch lands within
-~8 cents. Get phonemes for any words with `espeak-ng -q -x "your text"`.
+`daftdsp/singer.py` turns a word-based score into a sung vocal. Its design (one
+clean, hybrid pipeline):
+
+- **espeak speaks whole words** naturally, so pronunciation is correct.
+- Each word is split into syllables at its vowel nuclei and **warped onto its
+  notes in one continuous pass** — no per-syllable clips crossfaded together, so
+  consonants are never faded away and words stay intelligible.
+- **Voiced vowels** are rebuilt by **harmonic + noise resynthesis** (`harmonic.py`,
+  a from-scratch WORLD/STRAIGHT-style vocoder): clean, phase-dispersed sinusoids
+  at the exact target pitch → a smooth, stable, non-buzzy vocal that holds without
+  decaying.
+- **Unvoiced consonants** (s/t/k/f/sh …) are taken from **espeak's real waveform**,
+  time-warped to the same clock → crisp, natural articulation.
+- Pitch gets **legato glides** and a **vibrato that swells in**; a light
+  timbre / de-ess / stereo / reverb chain finishes it.
+
+So the vowels come from the synthesiser (stable, tuneful) and the consonants from
+real speech (intelligible). Pitch lands within ~8 cents; the output is click-free.
+
+Scores are plain word lists (`daftdsp/songs.py`): `(word, [(note, beats), ...])`
+with one note per syllable, or `("rest", beats)`.
 
 ```bash
 python examples/sing_demo.py            # render every song in daftdsp/songs.py
-python examples/sing_demo.py twinkle    # just one  -> renders/miku_twinkle.wav
+python examples/sing_demo.py twinkle    # just one  -> renders/aria_twinkle.wav
 ```
 
 ### Tests
@@ -88,9 +94,9 @@ The package `daftdsp/` is one module per DSP stage:
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
-| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input, formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain** (with micro-movement), **continuous phrasing** + dynamic arc, legato glides, vibrato/flutter/shimmer, plus **voice-timbre shaping** (warmth, singer's-formant ring, de-buzz, air), a **breath/aspiration** layer, and bus compression (Miku-style) |
-| `singer.py`   | **Aria** singer (current best): speaks whole **words** naturally, then epoch-based PSOLA **warps** each syllable's vowel onto its note (slow ping-pong through the steady vowel — click-free, no loops/noise), legato glides, vibrato + flutter |
-| `songs.py`    | Example scores — phoneme-based (`SONGS`) for `singing.py`, word-based (`ARIA_SONGS`) for `singer.py` |
+| `harmonic.py` | Harmonic + noise **resynthesis** (WORLD/STRAIGHT-style): cepstral spectral envelope, clean phase-dispersed sinusoids at the target pitch + envelope-shaped noise. The singer's voiced-vowel synthesiser |
+| `singer.py`   | **Aria** singer: whole-word espeak → continuous per-word warp onto the melody; HNM for voiced vowels + real espeak consonants; legato glides, swelling vibrato, timbre/de-ess/reverb |
+| `songs.py`    | Example word-based scores (`SONGS`) — scale, Twinkle, Ode, Mary, Row, Jingle Bells, Starlight, Digital Heart |
 
 ### A note on speed
 

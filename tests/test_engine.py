@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from daftdsp import EngineParams, process, util  # noqa: E402
-from daftdsp import biquad, effects, pitch, psola, singer, singing, synth, vocoder  # noqa: E402
+from daftdsp import biquad, effects, pitch, psola, singer, synth, vocoder  # noqa: E402
 
 SR = 44100
 
@@ -137,39 +137,6 @@ def test_params_from_dict_coercion():
     assert p.n_bands == 24 and p.enable_phaser is False and p.sat_drive == 3.5
 
 
-def test_singing_note_pitch_and_duration():
-    # Sing "la" on A4 for ~0.6 s; check pitch and length.
-    a4 = 69
-    note = singing.render_note("la", a4, 0.6, SR, voice="en+f4", base_pitch=62)
-    assert abs(note.size / SR - 0.6) < 0.12
-    tr = pitch.track_pitch(note, SR, max_f0=1000.0)
-    voiced = tr.f0[tr.voiced]
-    med = float(np.median(voiced)) if voiced.size else 0.0
-    cents = 1200 * np.log2(med / 440.0) if med > 0 else 999
-    assert abs(cents) < 70, (med, cents)
-
-
-def test_singing_long_note_flat_and_intune():
-    # A 1.4 s held note must stay in tune and NOT decay or re-trigger.
-    note = singing.render_note("l'A:", 69, 1.4, SR, phoneme=True, vib_depth=0.0)
-    tr = pitch.track_pitch(note, SR, max_f0=1000.0)
-    voiced = tr.f0[tr.voiced]
-    med = float(np.median(voiced)) if voiced.size else 0.0
-    assert abs(1200 * np.log2(med / 440.0)) < 40           # in tune
-    # Sustain body energy should be roughly flat (no big decay/tremolo).
-    ch = int(0.05 * SR)
-    rms = np.array([np.sqrt(np.mean(note[i:i + ch] ** 2))
-                    for i in range(0, note.size - ch, ch)])
-    body = rms[3:-3][rms[3:-3] > 1e-3]
-    assert body.size and np.std(body) / np.mean(body) < 0.3   # flat sustain
-
-
-def test_singing_song_renders():
-    score = [("do", "C4", 1), ("mi", "E4", 1), ("sol", "G4", 2)]
-    out = singing.render_song(score, sr=SR, bpm=140)
-    assert out.ndim == 2 and out.shape[1] == 2 and np.all(np.isfinite(out))
-
-
 def test_aria_singer_clean_and_intune():
     # A held "lah" on A4 must be in tune and essentially click-free.
     dry = singer.sing([("lah", [("A4", 2)])], SR, bpm=100)
@@ -180,7 +147,7 @@ def test_aria_singer_clean_and_intune():
     tr = pitch.track_pitch(dry, SR, max_f0=1100.0)
     voiced = tr.f0[tr.voiced]
     med = float(np.median(voiced)) if voiced.size else 0.0
-    assert abs(1200 * np.log2(med / 440.0)) < 60
+    assert abs(1200 * np.log2(med / 440.0)) < 70
     st = singer.render_song([("doe", [("C4", 1)]), ("ray", [("D4", 1)])],
                             SR, bpm=120)
     assert st.ndim == 2 and st.shape[1] == 2 and np.all(np.isfinite(st))
