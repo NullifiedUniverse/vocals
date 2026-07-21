@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daft Punk Vocal DSP Engine</title>
+<style>
+  :root{
+    --bg:#07070c; --panel:#111119; --panel2:#161622; --line:#26263a;
+    --gold:#f5c542; --gold-dim:#a8862a; --chrome:#c9d2e0; --text:#e8ecf5;
+    --muted:#8b93a7; --red:#ff5a5a; --cyan:#49d6e0;
+    --glow:0 0 18px rgba(245,197,66,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:
+     radial-gradient(1100px 500px at 50% -8%, #1a1424 0%, var(--bg) 60%);
+     color:var(--text);font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  a{color:var(--gold)}
+  .wrap{max-width:1240px;margin:0 auto;padding:22px 18px 70px}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+     padding:10px 4px 18px;border-bottom:1px solid var(--line);margin-bottom:18px}
+  .logo{font-size:30px;filter:drop-shadow(var(--glow))}
+  h1{font-size:20px;letter-spacing:3px;margin:0;font-weight:700;
+     text-transform:uppercase;background:linear-gradient(180deg,#fff,var(--gold));
+     -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);font-size:12px;letter-spacing:1px}
+  .pill{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--line);
+     padding:5px 10px;border-radius:20px}
+  .pill b{color:var(--cyan)}
+
+  .transport{background:linear-gradient(180deg,var(--panel2),var(--panel));
+     border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px;
+     box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  .textrow{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}
+  textarea#text{flex:1;min-width:260px;min-height:52px;resize:vertical;
+     background:#0c0c14;color:var(--text);border:1px solid var(--line);border-radius:10px;
+     padding:12px 14px;font-size:15px;letter-spacing:.3px}
+  textarea#text:focus{outline:none;border-color:var(--gold);box-shadow:var(--glow)}
+  button.go{min-width:190px;border:none;border-radius:10px;cursor:pointer;font-weight:800;
+     letter-spacing:2px;font-size:15px;color:#160f00;
+     background:linear-gradient(180deg,#ffe58a,var(--gold));box-shadow:var(--glow)}
+  button.go:disabled{opacity:.6;cursor:wait;filter:grayscale(.3)}
+  button.go:hover:not(:disabled){filter:brightness(1.08)}
+
+  .presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .presets button{background:var(--panel);color:var(--chrome);border:1px solid var(--line);
+     padding:7px 12px;border-radius:20px;font-size:12px;cursor:pointer;letter-spacing:.5px}
+  .presets button:hover{border-color:var(--gold);color:var(--gold)}
+
+  .player{display:flex;gap:14px;align-items:center;margin-top:16px;flex-wrap:wrap}
+  canvas#wave{flex:1;min-width:240px;height:90px;background:#0a0a12;border:1px solid var(--line);
+     border-radius:10px}
+  .pbtn{width:52px;height:52px;border-radius:50%;border:1px solid var(--gold);cursor:pointer;
+     background:#0c0c14;color:var(--gold);font-size:20px}
+  .pbtn:hover{box-shadow:var(--glow)}
+  .meta{font-size:12px;color:var(--muted);line-height:1.7;min-width:150px}
+  .meta b{color:var(--chrome)}
+  .dl{display:flex;gap:8px;flex-wrap:wrap}
+  .dl button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+     padding:6px 10px;border-radius:8px;font-size:11px;cursor:pointer}
+  .dl button:hover{color:var(--gold);border-color:var(--gold)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .group{background:linear-gradient(180deg,var(--panel2),var(--panel));
+     border:1px solid var(--line);border-radius:12px;padding:14px 15px}
+  .group h2{font-size:12px;letter-spacing:2px;text-transform:uppercase;margin:0 0 12px;
+     color:var(--gold);display:flex;align-items:center;gap:8px}
+  .group h2 .dot{width:7px;height:7px;border-radius:50%;background:var(--gold);
+     box-shadow:var(--glow)}
+  .ctrl{margin-bottom:12px}
+  .ctrl:last-child{margin-bottom:2px}
+  .ctrl label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);
+     margin-bottom:5px}
+  .ctrl label .val{color:var(--chrome);font-variant-numeric:tabular-nums;
+     background:#0c0c14;padding:1px 7px;border-radius:6px;border:1px solid var(--line)}
+  input[type=range]{-webkit-appearance:none;width:100%;height:5px;border-radius:4px;
+     background:linear-gradient(90deg,var(--gold-dim),#2b2b3d);outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+     border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,var(--gold));
+     cursor:pointer;border:1px solid #7a5f14;box-shadow:0 0 8px rgba(245,197,66,.6)}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+     background:var(--gold);cursor:pointer;border:1px solid #7a5f14}
+  select{width:100%;background:#0c0c14;color:var(--text);border:1px solid var(--line);
+     border-radius:8px;padding:7px 8px;font-size:13px}
+  select:focus{outline:none;border-color:var(--gold)}
+  .switch{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+  .switch .track{width:38px;height:20px;border-radius:20px;background:#2b2b3d;position:relative;
+     transition:.15s;border:1px solid var(--line)}
+  .switch .track:after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;
+     border-radius:50%;background:var(--muted);transition:.15s}
+  .switch.on .track{background:linear-gradient(90deg,var(--gold-dim),var(--gold))}
+  .switch.on .track:after{left:20px;background:#160f00}
+  .switch span{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--gold)}
+  .group.off{opacity:.5}
+  footer{margin-top:26px;color:var(--muted);font-size:11px;text-align:center;letter-spacing:1px}
+  .err{color:var(--red);font-size:12px;margin-top:8px;min-height:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">🤖</div>
+    <div>
+      <h1>Daft&nbsp;Punk Vocal DSP Engine</h1>
+      <div class="sub">text → robot · from-scratch vocoder · psola auto-tune · talkbox</div>
+    </div>
+    <div class="pill">engine <b id="engineStat">…</b> · <b id="renderStat">—</b></div>
+  </header>
+
+  <div class="transport">
+    <div class="textrow">
+      <textarea id="text" spellcheck="false">we are the robots</textarea>
+      <button class="go" id="synth">SYNTHESIZE</button>
+    </div>
+    <div class="presets" id="presets"></div>
+    <div class="err" id="err"></div>
+    <div class="player">
+      <button class="pbtn" id="play">▶</button>
+      <canvas id="wave"></canvas>
+      <div class="meta" id="meta">no render yet</div>
+      <div class="dl">
+        <button id="dl16">⬇ WAV 16-bit</button>
+        <button id="dl32">⬇ WAV 32-bit float</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    all filters, trackers &amp; synthesis hand-written in numpy · no scipy / librosa ·
+    <span id="espeakNote"></span>
+  </footer>
+</div>
+
+<audio id="audio"></audio>
+<script>
+const NOTE=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const roots=[]; for(let o=2;o<=4;o++) for(let s=0;s<12;s++) roots.push(NOTE[s]+o);
+const keyOpts=NOTE.map((n,i)=>[i,n]);
+
+// Control schema -> maps 1:1 to EngineParams fields.
+const SCHEMA=[
+ ["Voice / TTS","🎙",[
+   ["voice","select","Voice",{opts:"voices"}],
+   ["wpm","range","Speed (wpm)",{min:80,max:260,step:5}],
+   ["tts_pitch","range","Voice pitch",{min:0,max:99,step:1}],
+ ]],
+ ["Auto-Tune (PSOLA)","🎯",[
+   ["enable_autotune","toggle","Auto-tune"],
+   ["key_root","select","Key",{pairs:keyOpts}],
+   ["scale","select","Scale",{opts:"scales"}],
+   ["retune","range","Retune amount",{min:0,max:1,step:.01}],
+   ["retune_time_ms","range","Retune time (ms)",{min:.5,max:200,step:.5}],
+ ]],
+ ["Carrier Synth","🎹",[
+   ["chord_root","select","Chord root",{list:roots}],
+   ["chord_quality","select","Chord quality",{opts:"chord_qualities"}],
+   ["saw_level","range","Saw level",{min:0,max:1,step:.01}],
+   ["pulse_level","range","Pulse level",{min:0,max:1,step:.01}],
+   ["pulse_width","range","Pulse width",{min:.05,max:.95,step:.01}],
+   ["pwm_rate","range","PWM rate (Hz)",{min:0,max:8,step:.05}],
+   ["pwm_depth","range","PWM depth",{min:0,max:.45,step:.01}],
+   ["detune_cents","range","Detune (cents)",{min:0,max:50,step:.5}],
+   ["detune_voices","range","Detune voices",{min:1,max:7,step:1}],
+   ["octave_layer","toggle","Octave layering ±1"],
+   ["sub_level","range","Sub oscillator",{min:0,max:1,step:.01}],
+ ]],
+ ["32-Band Vocoder","📡",[
+   ["enable_vocoder","toggle","Vocoder"],
+   ["n_bands","range","Bands",{min:8,max:40,step:1}],
+   ["band_lo","range","Low freq (Hz)",{min:50,max:400,step:5}],
+   ["band_hi","range","High freq (Hz)",{min:4000,max:14000,step:100}],
+   ["band_q","range","Band Q",{min:2,max:16,step:.1}],
+   ["voc_attack_ms","range","Env attack (ms)",{min:.5,max:40,step:.5}],
+   ["voc_release_ms","range","Env release (ms)",{min:2,max:120,step:1}],
+   ["sibilance","range","Sibilance / air",{min:0,max:1,step:.01}],
+   ["vocoder_mix","range","Vocoder mix",{min:0,max:1,step:.01}],
+   ["dry_voice_mix","range","Dry voice blend",{min:0,max:1,step:.01}],
+ ]],
+ ["Formant / Talkbox","👄",[
+   ["enable_talkbox","toggle","Talkbox"],
+   ["vowel","select","Vowel",{opts:"vowels"}],
+   ["vowel2","select","Morph vowel",{opts:"vowels",none:true}],
+   ["morph_rate","range","Morph rate (Hz)",{min:0,max:8,step:.05}],
+   ["formant_shift","range","Formant shift",{min:.5,max:2,step:.01}],
+   ["formant_resonance","range","Resonance",{min:2,max:16,step:.1}],
+   ["formant_gain_db","range","Formant gain (dB)",{min:0,max:18,step:.5}],
+   ["talkbox_amount","range","Amount",{min:0,max:1,step:.01}],
+ ]],
+ ["Saturation","🔥",[
+   ["enable_saturation","toggle","tanh drive"],
+   ["sat_drive","range","Drive",{min:.5,max:8,step:.1}],
+   ["sat_mix","range","Mix",{min:0,max:1,step:.01}],
+ ]],
+ ["Phaser","🌀",[
+   ["enable_phaser","toggle","Phaser"],
+   ["phaser_rate","range","Rate (Hz)",{min:.05,max:4,step:.01}],
+   ["phaser_depth","range","Depth",{min:0,max:1,step:.01}],
+   ["phaser_stages","range","All-pass stages",{min:2,max:8,step:1}],
+   ["phaser_feedback","range","Feedback",{min:0,max:.95,step:.01}],
+ ]],
+ ["Sidechain Pump","🥁",[
+   ["enable_sidechain","toggle","Sidechain"],
+   ["sc_amount","range","Amount",{min:0,max:1,step:.01}],
+   ["sc_threshold_db","range","Threshold (dB)",{min:-48,max:0,step:1}],
+   ["sc_ratio","range","Ratio",{min:1,max:20,step:.5}],
+   ["sc_attack_ms","range","Attack (ms)",{min:.5,max:40,step:.5}],
+   ["sc_release_ms","range","Release (ms)",{min:20,max:500,step:5}],
+   ["kick_bpm","range","Kick BPM",{min:60,max:180,step:1}],
+ ]],
+ ["EQ / Stereo","🎛",[
+   ["enable_eq","toggle","EQ"],
+   ["eq_hp","range","High-pass (Hz)",{min:20,max:400,step:5}],
+   ["eq_shelf_freq","range","Shelf freq (Hz)",{min:2000,max:12000,step:100}],
+   ["eq_shelf_db","range","Shelf gain (dB)",{min:-6,max:12,step:.5}],
+   ["haas_ms","range","Haas delay (ms)",{min:0,max:40,step:1}],
+   ["width","range","Stereo width",{min:0,max:2,step:.01}],
+   ["output_gain","range","Output gain",{min:0,max:1.5,step:.01}],
+ ]],
+];
+
+let META=null, DEFAULTS={}, VALS={}, lastBlobUrl=null;
+const $=id=>document.getElementById(id);
+
+function optionList(cfg){
+  if(cfg.pairs) return cfg.pairs;
+  if(cfg.list) return cfg.list.map(v=>[v,v]);
+  let arr=(META[cfg.opts]||[]).map(v=>[v,v]);
+  if(cfg.none) arr=[["","(none)"],...arr];
+  return arr;
+}
+
+function build(){
+  const grid=$("grid"); grid.innerHTML="";
+  for(const [title,icon,ctrls] of SCHEMA){
+    const g=document.createElement("div"); g.className="group"; g.dataset.title=title;
+    g.innerHTML=`<h2><span class="dot"></span>${icon} ${title}</h2>`;
+    for(const [key,type,lbl,cfg={}] of ctrls){
+      const c=document.createElement("div"); c.className="ctrl";
+      if(type==="toggle"){
+        const on=!!VALS[key];
+        c.innerHTML=`<div class="switch ${on?'on':''}" data-k="${key}">
+           <div class="track"></div><span>${lbl}</span></div>`;
+        const sw=c.querySelector(".switch");
+        sw.onclick=()=>{VALS[key]=!VALS[key];sw.classList.toggle("on",VALS[key]);
+           syncGroupState();};
+      }else if(type==="select"){
+        const opts=optionList(cfg).map(([v,t])=>
+           `<option value="${v}" ${String(VALS[key])===String(v)?'selected':''}>${t}</option>`).join("");
+        c.innerHTML=`<label>${lbl}</label><select data-k="${key}">${opts}</select>`;
+        c.querySelector("select").onchange=e=>{VALS[key]=e.target.value;};
+      }else{
+        const v=VALS[key];
+        c.innerHTML=`<label>${lbl}<span class="val" id="v_${key}">${fmt(v,cfg)}</span></label>
+           <input type="range" data-k="${key}" min="${cfg.min}" max="${cfg.max}"
+             step="${cfg.step}" value="${v}">`;
+        c.querySelector("input").oninput=e=>{
+           VALS[key]=parseFloat(e.target.value);$("v_"+key).textContent=fmt(VALS[key],cfg);};
+      }
+      g.appendChild(c);
+    }
+    grid.appendChild(g);
+  }
+  syncGroupState();
+}
+function fmt(v,cfg){const s=cfg.step||1;return (s<1)?(+v).toFixed(s<0.1?2:1):(""+Math.round(v));}
+function syncGroupState(){
+  const map={"Auto-Tune (PSOLA)":"enable_autotune","32-Band Vocoder":"enable_vocoder",
+    "Formant / Talkbox":"enable_talkbox","Saturation":"enable_saturation",
+    "Phaser":"enable_phaser","Sidechain Pump":"enable_sidechain","EQ / Stereo":"enable_eq"};
+  document.querySelectorAll(".group").forEach(g=>{
+    const k=map[g.dataset.title]; if(k) g.classList.toggle("off",!VALS[k]);});
+}
+
+function collect(){
+  const p={...VALS}; p.text=$("text").value; return p;
+}
+
+async function synth(){
+  const btn=$("synth"); btn.disabled=true; const old=btn.textContent;
+  btn.textContent="SYNTHESIZING…"; $("err").textContent="";
+  try{
+    const r=await fetch("/api/synthesize",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(collect())});
+    const j=await r.json();
+    if(j.error){$("err").textContent="⚠ "+j.error;return;}
+    const bytes=Uint8Array.from(atob(j.audio_b64),c=>c.charCodeAt(0));
+    const blob=new Blob([bytes],{type:"audio/wav"});
+    if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+    lastBlobUrl=URL.createObjectURL(blob);
+    $("audio").src=lastBlobUrl;
+    drawWave(bytes.buffer.slice(0));
+    showMeta(j.meta);
+    $("renderStat").textContent=j.meta.render_ms+" ms";
+    $("audio").play().catch(()=>{});
+  }catch(e){$("err").textContent="⚠ "+e.message;}
+  finally{btn.disabled=false;btn.textContent=old;}
+}
+
+function showMeta(m){
+  $("meta").innerHTML=`<b>${m.duration_s}s</b> · f0 <b>${m.median_f0||'—'} Hz</b><br>`+
+    `chord <b>[${(m.chord_midi||[]).join(', ')}]</b><br>`+
+    `render <b>${m.render_ms} ms</b> · peak <b>${m.peak}</b>`;
+}
+
+let AC=null;
+function drawWave(buf){
+  const cv=$("wave"),ctx=cv.getContext("2d");
+  cv.width=cv.clientWidth*devicePixelRatio; cv.height=cv.clientHeight*devicePixelRatio;
+  AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+  AC.decodeAudioData(buf,ab=>{
+    const d=ab.getChannelData(0),W=cv.width,H=cv.height,step=Math.max(1,Math.floor(d.length/W));
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle="#26263a";ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+    ctx.strokeStyle="#f5c542";ctx.lineWidth=1.2*devicePixelRatio;ctx.beginPath();
+    for(let x=0;x<W;x++){let mn=1,mx=-1;for(let i=0;i<step;i++){const s=d[x*step+i]||0;
+      if(s<mn)mn=s;if(s>mx)mx=s;}
+      ctx.moveTo(x,(1-mn)*H/2);ctx.lineTo(x,(1-mx)*H/2);}
+    ctx.stroke();
+  },()=>{});
+}
+
+async function download(float32){
+  const url="/api/synthesize.wav"+(float32?"?float32=1":"");
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(collect())});
+  const blob=await r.blob(),a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);a.download=float32?"daftpunk_32f.wav":"daftpunk_16.wav";
+  a.click();URL.revokeObjectURL(a.href);
+}
+
+function applyPreset(name){
+  const ov=META.presets[name]||{};
+  VALS={...DEFAULTS,...VALS,...ov}; build();
+}
+
+async function boot(){
+  META=await (await fetch("/api/meta")).json();
+  DEFAULTS=META.defaults; VALS={...DEFAULTS};
+  $("engineStat").textContent="ready";
+  $("espeakNote").textContent=META.espeak?"espeak-ng TTS active":
+    "built-in fallback synth (install espeak-ng for speech)";
+  const pc=$("presets");
+  Object.keys(META.presets).forEach(n=>{const b=document.createElement("button");
+    b.textContent=n;b.onclick=()=>applyPreset(n);pc.appendChild(b);});
+  build();
+  const au=$("audio"),pb=$("play");
+  au.onplay=()=>pb.textContent="⏸"; au.onpause=()=>pb.textContent="▶";
+  au.onended=()=>pb.textContent="▶";
+  pb.onclick=()=>{au.paused?au.play():au.pause();};
+  $("synth").onclick=synth; $("dl16").onclick=()=>download(false);
+  $("dl32").onclick=()=>download(true);
+  $("text").addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")synth();});
+}
+boot();
+</script>
+</body>
+</html>

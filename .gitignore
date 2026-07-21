@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+renders/
+*.wav
+.venv/
+venv/
+.DS_Store
