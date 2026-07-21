@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import effects, pitch, tts, util
+from . import effects, harmonic, pitch, tts, util
 from .biquad import (biquad_fft, high_shelf, highpass, low_shelf, lowpass,
                      one_pole_lp_fft, peaking)
 from .util import midi_to_freq, note_to_midi
@@ -171,6 +171,52 @@ def _render_syllable(x, sr, marks, f0s, voiced, span, note_dur, tgt_f0,
     return note.astype(np.float32)
 
 
+def _render_syllable_hnm(ana, sr, span, vowel, note_dur, tgt_f0, prev_f0,
+                         glide_ms, hop, rng):
+    """Render one note by harmonic+noise resynthesis (harmonic.py): hold the
+    vowel's envelope frames while synthesizing clean sinusoids at the target
+    pitch (with glide + vibrato baked straight into the synthesis frequency)."""
+    s0, s1 = span
+    v0, v1 = vowel
+    nf = ana["env"].shape[0]
+    out_len = max(int(note_dur * sr), int(0.10 * sr))
+    onset_out = min(max(0, v0 - s0), int(0.13 * sr))
+    coda_out = min(max(0, s1 - v1), int(0.12 * sr))
+    sustain_out = max(1, out_len - onset_out - coda_out)
+
+    fof = np.empty(out_len)
+    if onset_out > 0:
+        fof[:onset_out] = np.linspace(s0 / hop, v0 / hop, onset_out)
+    fv0, fv1 = v0 / hop, v1 / hop
+    a = fv0 + 0.2 * (fv1 - fv0)
+    b = fv1 - 0.2 * (fv1 - fv0)
+    if b <= a:
+        a, b = fv0, max(fv0 + 0.5, fv1)
+    st = np.arange(sustain_out)
+    tri = 0.5 - 0.5 * np.cos(2.0 * np.pi * 0.7 * st / sr)
+    fof[onset_out:onset_out + sustain_out] = a + (b - a) * tri
+    if coda_out > 0:
+        fof[onset_out + sustain_out:] = np.linspace(fv1, s1 / hop,
+                                                    out_len - onset_out - sustain_out)
+    fof = np.clip(fof, 0, nf - 1)
+
+    t = np.arange(out_len)
+    f0 = np.full(out_len, float(tgt_f0))
+    if prev_f0 > 0 and glide_ms > 0:
+        g = min(int(glide_ms / 1000.0 * sr), out_len // 2)
+        if g > 1:
+            f0[:g] = prev_f0 * (tgt_f0 / prev_f0) ** np.linspace(0.0, 1.0, g)
+    # Vibrato (swells in) + flutter, straight into the synthesis frequency.
+    venv = np.clip((t / sr - 0.28) / 0.3, 0.0, 1.0)
+    cents = 33.0 * venv * np.sin(2.0 * np.pi * 5.7 * t / sr)
+    fl = rng.standard_normal(out_len)
+    w = max(1, int(sr * 0.13))
+    fl = np.convolve(fl, np.ones(w) / w, mode="same")
+    cents += 5.0 * (fl / (np.std(fl) or 1.0))
+    f0 = f0 * 2.0 ** (cents / 1200.0)
+    return harmonic.resynth(ana, fof, f0, sr)
+
+
 def _read_cubic(x, read):
     n = x.size
     i = np.floor(read).astype(np.int64)
@@ -238,11 +284,13 @@ def _voice_timbre(x, sr):
 
 
 def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
-         glide_ms=55.0, crossfade_ms=22.0, seed=5):
+         glide_ms=55.0, crossfade_ms=22.0, seed=5, engine="psola"):
     """Render a word-based score to a continuous sung mono line.
 
     Score items: ``("rest", beats)`` or ``(word_text, [(note, beats), ...])``
-    where the note list has one entry per syllable of the word."""
+    where the note list has one entry per syllable of the word.  ``engine`` picks
+    the synthesiser: ``"psola"`` (warp espeak's waveform) or ``"hnm"`` (harmonic +
+    noise resynthesis -- cleaner, more synthetic-diva tone)."""
     beat = 60.0 / bpm
     xf = int(crossfade_ms / 1000.0 * sr)
     rng = np.random.default_rng(seed)
@@ -267,15 +315,21 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
         f0s, voiced = track.to_per_sample(raw.size)
         marks = _marks(sr, f0s, voiced, raw.size)
         spans, _ = _split_syllables(raw, sr, track, len(notes))
+        ana = harmonic.analyze(raw, sr) if engine == "hnm" else None
         for k, ((note, beats), span) in enumerate(zip(notes, spans)):
             midi = note_to_midi(note)
             f0 = midi_to_freq(midi)
             dur = beats * beat
-            # Keep the consonant tail on every syllable (clearer articulation),
-            # not just word-final ones.
-            a = _render_syllable(raw, sr, marks, f0s, voiced, span,
-                                 dur + xf / sr, f0, prev_f0, glide_ms, coda=True)
-            a = _expression(a, sr, np.random.default_rng(int(midi * 97 + a.size)))
+            if engine == "hnm":
+                vowel = _vowel_region(raw, sr, span, voiced)
+                a = _render_syllable_hnm(ana, sr, span, vowel, dur + xf / sr, f0,
+                                         prev_f0, glide_ms, ana["hop"],
+                                         np.random.default_rng(int(midi * 97 + k)))
+            else:
+                # Keep the consonant tail on every syllable (clearer articulation).
+                a = _render_syllable(raw, sr, marks, f0s, voiced, span,
+                                     dur + xf / sr, f0, prev_f0, glide_ms, coda=True)
+                a = _expression(a, sr, np.random.default_rng(int(midi * 97 + a.size)))
             new_phrase = prev_f0 == 0.0
             jitter = 0 if new_phrase else int(hum.normal(0.0, 0.004) * sr)
             items.append({"a": a, "pos": max(0, int(t * sr) + jitter),
@@ -317,9 +371,9 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
 
 
 def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64,
-                reverb_mix=0.19, width=1.2):
+                reverb_mix=0.19, width=1.2, engine="psola"):
     """Full render: sing -> timbre-shape -> stereo -> reverb."""
-    dry = sing(score, sr, bpm, voice, base_pitch)
+    dry = sing(score, sr, bpm, voice, base_pitch, engine=engine)
     dry = _voice_timbre(dry, sr)
     dry = _deess(dry, sr)
     dry = util.normalize_peak(dry, 0.92)
