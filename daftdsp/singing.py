@@ -21,6 +21,8 @@ from __future__ import annotations
 import numpy as np
 
 from . import effects, pitch, psola, tts, util
+from .biquad import (biquad_fft, high_shelf, highpass, low_shelf, lowpass,
+                     one_pole_lp_fft, peaking)
 from .util import midi_to_freq, note_to_midi
 
 
@@ -92,10 +94,21 @@ def _sustain(x, sr, f0, length, coda=True):
 
     out = np.zeros(body_len + win)
     nrm = np.zeros(body_len + win)
+    # Micro-movement: the read point wanders a few periods around the nucleus
+    # (period-snapped, so phase-coherent) so the held vowel's timbre isn't frozen.
+    wander = 3 * period
+    lo_hold = max(onset, hold - wander)
+    hi_hold = min(n - win, hold + wander)
     k = 0
     while k * period < body_len:
         op = k * period
-        ai = op if op < onset else hold
+        if op < onset:
+            ai = op
+        else:
+            ph = np.sin(2.0 * np.pi * 1.4 * op / sr
+                        + 0.6 * np.sin(2.0 * np.pi * 0.27 * op / sr))
+            ai = hold + int(round(ph * wander / period)) * period
+            ai = int(np.clip(ai, lo_hold, hi_hold))
         ai = int(np.clip(ai, 0, n - win))
         out[op:op + win] += x[ai:ai + win] * w
         nrm[op:op + win] += w
@@ -278,10 +291,57 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=62, phoneme=True,
 
 
 # ---------------------------------------------------------------------------
-# chorus + full render
+# timbre, breath, compression (learning from vocal-synth voicing)
 # ---------------------------------------------------------------------------
 
-def chorus(x, sr, mix=0.13, voices=2, depth_ms=4.0, rate=0.45):
+def _voice_timbre(x, sr):
+    """Reshape espeak's thin/buzzy tone toward a natural sung voice: add low-mid
+    warmth, fill the 3 kHz 'singer's formant' ring, tame the ~4 kHz buzz spike,
+    and open up air on top.  (Frequencies chosen from espeak's measured spectrum.)"""
+    chain = [
+        highpass(90.0, sr, 0.7),
+        low_shelf(330.0, sr, 5.0),          # body / warmth (espeak is thin here)
+        peaking(2900.0, sr, 1.5, 3.5),      # singer's-formant ring (fills the dip)
+        peaking(4200.0, sr, 2.4, -4.5),     # tame the harsh buzzy resonance
+        high_shelf(7500.0, sr, 4.0),        # air / breathiness sheen
+    ]
+    return biquad_fft(chain, x)
+
+
+def _breath(dry, sr, amount=0.14, seed=3):
+    """Aspiration/breath layer -- the signature of modern vocal synths.  Band-
+    limited noise (a breath spectrum) modulated by the voice envelope, with extra
+    on note attacks."""
+    if amount <= 0:
+        return np.zeros_like(dry)
+    n = dry.size
+    env = one_pole_lp_fft(np.abs(dry), sr, 22.0)
+    env = env / (float(np.max(env)) + 1e-9)
+    rise = np.diff(env, prepend=env[0])
+    attack = one_pole_lp_fft(np.maximum(rise, 0.0), sr, 40.0)
+    attack = attack / (float(np.max(attack)) + 1e-9)
+    mod = 0.75 * env + 0.9 * attack
+
+    rng = np.random.default_rng(seed)
+    noise = rng.standard_normal(n)
+    noise = biquad_fft([highpass(1600.0, sr, 0.7), lowpass(7500.0, sr, 0.7)], noise)
+    breath = noise * mod
+    breath = breath / (float(np.max(np.abs(breath))) + 1e-9)
+    return (amount * breath).astype(np.float32)
+
+
+def _compress(x, sr, thresh_db=-20.0, ratio=2.5, makeup_db=3.0):
+    """Gentle 'produced' bus compression (smooth FFT-envelope detector)."""
+    env = one_pole_lp_fft(np.abs(x).astype(np.float64), sr, 26.0)
+    env_db = 20.0 * np.log10(np.maximum(env, 1e-6))
+    over = np.maximum(0.0, env_db - thresh_db)
+    gain_db = -over * (1.0 - 1.0 / max(1.0, ratio)) + makeup_db
+    gain = one_pole_lp_fft(10.0 ** (gain_db / 20.0), sr, 45.0)
+    return (x * gain).astype(np.float32)
+
+
+def chorus(x, sr, mix=0.12, voices=2, depth_ms=4.0, rate=0.45):
+    """Light detuned doubling for a thicker, produced sheen."""
     if mix <= 0:
         return x
     n = x.size
@@ -296,17 +356,21 @@ def chorus(x, sr, mix=0.13, voices=2, depth_ms=4.0, rate=0.45):
 
 
 def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=62,
-                phoneme=True, chorus_mix=0.13, reverb_mix=0.22, bright_db=3.5,
+                phoneme=True, breath=0.14, chorus_mix=0.12, reverb_mix=0.2,
                 width=1.25):
-    """Full render: sing (continuous, expressive) -> chorus -> bright EQ ->
-    stereo -> reverb."""
+    """Full render: sing -> timbre-shape -> +breath -> compress -> chorus ->
+    stereo -> reverb.  Aims for a warm, breathy, produced vocal-synth tone."""
     dry = sing(score, sr, bpm, voice, base_pitch, phoneme=phoneme)
-    dry = chorus(dry, sr, mix=chorus_mix)
+    dry = _voice_timbre(dry, sr)
     dry = util.normalize_peak(dry, 0.9)
-    dry = effects.eq(dry, sr, hp_freq=110.0, shelf_freq=5500.0,
-                     shelf_gain_db=bright_db)
+    dry = dry + _breath(dry, sr, amount=breath)
+    dry = util.normalize_peak(dry, 0.9)
+    dry = _compress(dry, sr)
+    dry = chorus(dry, sr, mix=chorus_mix)
+    dry = util.normalize_peak(dry, 0.92)
+
     stereo = effects.stereoize(dry, sr, haas_ms=10.0, width=width)
-    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.48,
+    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.5,
                             width=1.2)
     stereo = util.normalize_percentile(stereo, target=0.85)
     stereo = util.soft_limit(stereo, 0.98)

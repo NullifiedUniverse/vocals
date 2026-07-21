@@ -54,8 +54,11 @@ syllable-final consonants are dropped so the vowels connect) under a single
 **dynamic envelope** that swells toward the phrase peak and tapers at the end.
 Expression comes from **legato pitch-glides**, **vibrato that swells in**, and
 subtle **pitch flutter + amplitude shimmer** so held notes aren't a frozen synth
-tone. Pitch lands within ~8 cents. Get phonemes for any words with
-`espeak-ng -q -x "your text"`.
+tone. Finally the voice is voiced like a vocal synth: **timbre shaping** (low-mid
+warmth, a 3 kHz singer's-formant ring, taming espeak's ~4 kHz buzz, air on top —
+all chosen from espeak's measured spectrum), a **breath/aspiration** noise layer
+(heavier on note attacks), and gentle **bus compression**. Pitch lands within
+~8 cents. Get phonemes for any words with `espeak-ng -q -x "your text"`.
 
 ```bash
 python examples/sing_demo.py            # render every song in daftdsp/songs.py
@@ -85,7 +88,7 @@ The package `daftdsp/` is one module per DSP stage:
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
-| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input, formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain**, **continuous phrasing** (crossfaded notes, connected vowels, dynamic arc), legato glides, swelling vibrato + pitch flutter + breath shimmer, bright chorus/reverb (Miku-style) |
+| `singing.py`  | Note-timed **singing** synth: espeak **phoneme** input, formant-preserving pitch, pitch-synchronous **vowel-nucleus sustain** (with micro-movement), **continuous phrasing** + dynamic arc, legato glides, vibrato/flutter/shimmer, plus **voice-timbre shaping** (warmth, singer's-formant ring, de-buzz, air), a **breath/aspiration** layer, and bus compression (Miku-style) |
 | `songs.py`    | Example scores (`(phoneme-syllable, note, beats)`) — scale, Twinkle, Ode to Joy, an original |
 
 ### A note on speed
