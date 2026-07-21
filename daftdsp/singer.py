@@ -208,12 +208,15 @@ def _expression(x, sr, rng, vib_rate=5.7, vib_depth=32.0, vib_delay=0.28,
 
 
 def _voice_timbre(x, sr):
-    """Gentle, natural voicing: a little warmth, tame espeak's buzz, soft air."""
+    """Shape espeak's thin/buzzy tone toward a natural sung voice (frequencies
+    from espeak's measured spectrum): low-mid warmth, a 3 kHz singer's-formant
+    ring to fill the dip, tame the ~4 kHz buzz, and gentle air on top."""
     chain = [
         highpass(95.0, sr, 0.7),
-        low_shelf(340.0, sr, 3.5),
-        peaking(4000.0, sr, 2.0, -3.0),
-        high_shelf(9000.0, sr, 2.0),
+        low_shelf(330.0, sr, 4.0),           # warmth / body
+        peaking(2900.0, sr, 1.4, 3.0),       # singer's-formant ring (fills dip)
+        peaking(4200.0, sr, 2.4, -3.5),      # tame the harsh buzz
+        high_shelf(8500.0, sr, 2.5),         # air
     ]
     return biquad_fft(chain, x)
 
@@ -228,13 +231,17 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
     xf = int(crossfade_ms / 1000.0 * sr)
     rng = np.random.default_rng(seed)
 
-    # Render every note into (audio, start_sample, phrase_start, phrase_end).
+    # Render every note into a record dict (audio + timing + musical context).
     items = []
     t = 0.0
     prev_f0 = 0.0
+    phrase_id = 0
+    hum = np.random.default_rng(seed + 1)
     for it in score:
         if it[0] == "rest":
             t += it[1] * beat
+            if prev_f0 != 0.0:
+                phrase_id += 1
             prev_f0 = 0.0
             continue
         word, notes = it
@@ -248,46 +255,60 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
             midi = note_to_midi(note)
             f0 = midi_to_freq(midi)
             dur = beats * beat
-            coda = k == len(notes) - 1
+            # Keep the consonant tail on every syllable (clearer articulation),
+            # not just word-final ones.
             a = _render_syllable(raw, sr, marks, f0s, voiced, span,
-                                 dur + xf / sr, f0, prev_f0, glide_ms, coda)
+                                 dur + xf / sr, f0, prev_f0, glide_ms, coda=True)
             a = _expression(a, sr, np.random.default_rng(int(midi * 97 + a.size)))
-            items.append([a, int(t * sr), prev_f0 == 0.0, None])
+            new_phrase = prev_f0 == 0.0
+            jitter = 0 if new_phrase else int(hum.normal(0.0, 0.004) * sr)
+            items.append({"a": a, "pos": max(0, int(t * sr) + jitter),
+                          "midi": midi, "phrase": phrase_id, "start": new_phrase})
             t += dur
             prev_f0 = f0
-        if items:
-            items[-1][3] = True  # mark potential phrase end (fixed up below)
 
-    # A note is a phrase end if the next note is a new phrase (or it's the last).
-    for idx, item in enumerate(items):
-        nxt = items[idx + 1] if idx + 1 < len(items) else None
-        item[3] = nxt is None or nxt[2]
+    # Musical dynamics: build a loudness per note (higher notes and the phrase
+    # peak sing louder), grouped by phrase, and mark phrase ends.
+    for i, item in enumerate(items):
+        item["end"] = (i + 1 == len(items)) or (items[i + 1]["phrase"] != item["phrase"])
+    by_phrase = {}
+    for i, item in enumerate(items):
+        by_phrase.setdefault(item["phrase"], []).append(i)
+    gains = [1.0] * len(items)
+    for idxs in by_phrase.values():
+        mids = [items[i]["midi"] for i in idxs]
+        pmin, pmax = min(mids), max(mids)
+        for j, i in enumerate(idxs):
+            pn = (items[i]["midi"] - pmin) / (pmax - pmin) if pmax > pmin else 0.5
+            arc = np.sin(np.pi * (j + 0.5) / len(idxs))
+            gains[i] = 0.70 + 0.16 * pn + 0.16 * arc
 
     out = np.zeros(int(t * sr) + sr)
     ramp = np.linspace(0.0, 1.0, xf)
-    for a, pos, p_start, p_end in items:
-        a = a.copy()
-        if not p_start:
+    for i, item in enumerate(items):
+        a = item["a"].copy() * gains[i]
+        if not item["start"]:
             a[:xf] *= np.sin(0.5 * np.pi * ramp)
-        if not p_end:
+        if not item["end"]:
             a[-xf:] *= np.cos(0.5 * np.pi * ramp)
         else:
             rel = min(int(0.16 * sr), a.size)
             a[-rel:] *= np.linspace(1.0, 0.0, rel) ** 1.3
+        pos = item["pos"]
         e = min(out.size, pos + a.size)
         out[pos:e] += a[:e - pos]
     return out[:int(t * sr) + int(0.3 * sr)].astype(np.float32)
 
 
 def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64,
-                reverb_mix=0.16, width=1.2):
-    """Full render: sing -> gentle timbre -> stereo -> light reverb."""
+                reverb_mix=0.19, width=1.2):
+    """Full render: sing -> timbre-shape -> stereo -> reverb."""
     dry = sing(score, sr, bpm, voice, base_pitch)
     dry = _voice_timbre(dry, sr)
     dry = util.normalize_peak(dry, 0.92)
-    stereo = effects.stereoize(dry, sr, haas_ms=8.0, width=width)
-    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.68, damp=0.5,
-                            width=1.15)
+    stereo = effects.stereoize(dry, sr, haas_ms=9.0, width=width)
+    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.48,
+                            width=1.2)
     stereo = util.normalize_percentile(stereo, target=0.85)
     stereo = util.soft_limit(stereo, 0.98)
     return stereo

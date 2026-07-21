@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from daftdsp import EngineParams, process, util  # noqa: E402
-from daftdsp import biquad, effects, pitch, psola, singing, synth, vocoder  # noqa: E402
+from daftdsp import biquad, effects, pitch, psola, singer, singing, synth, vocoder  # noqa: E402
 
 SR = 44100
 
@@ -168,6 +168,22 @@ def test_singing_song_renders():
     score = [("do", "C4", 1), ("mi", "E4", 1), ("sol", "G4", 2)]
     out = singing.render_song(score, sr=SR, bpm=140)
     assert out.ndim == 2 and out.shape[1] == 2 and np.all(np.isfinite(out))
+
+
+def test_aria_singer_clean_and_intune():
+    # A held "lah" on A4 must be in tune and essentially click-free.
+    dry = singer.sing([("lah", [("A4", 2)])], SR, bpm=100)
+    assert dry.size > 0 and np.all(np.isfinite(dry))
+    d = np.abs(np.diff(dry))
+    md = np.median(d[d > 0]) + 1e-9
+    assert int(np.sum(d > 40 * md)) < 3          # no click storm
+    tr = pitch.track_pitch(dry, SR, max_f0=1100.0)
+    voiced = tr.f0[tr.voiced]
+    med = float(np.median(voiced)) if voiced.size else 0.0
+    assert abs(1200 * np.log2(med / 440.0)) < 60
+    st = singer.render_song([("doe", [("C4", 1)]), ("ray", [("D4", 1)])],
+                            SR, bpm=120)
+    assert st.ndim == 2 and st.shape[1] == 2 and np.all(np.isfinite(st))
 
 
 def test_full_engine_stereo_finite():
