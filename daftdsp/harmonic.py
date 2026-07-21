@@ -65,10 +65,11 @@ def analyze(x, sr, frame_ms=32.0, hop_ms=5.0):
             "energy": energy, "n": n, "sr": sr}
 
 
-def _harmonic(ana, frame_of_out, f0_out, sr, block=128, seed=1):
+def _harmonic(ana, frame_of_out, f0_out, sr, block=128, seed=1, formant_shift=1.0):
     """Voiced part: phase-dispersed sinusoids at the target pitch, amplitudes
     read from the (time-warped) envelope.  Phase is carried across blocks so the
-    tone is continuous and click-free."""
+    tone is continuous and click-free.  ``formant_shift`` > 1 scales the formants
+    up (a smaller/younger vocal tract -- brighter, more Miku)."""
     env = ana["env"]
     freqs = ana["freqs"]
     voiced = ana["voiced"]
@@ -103,7 +104,9 @@ def _harmonic(ana, frame_of_out, f0_out, sr, block=128, seed=1):
         tilt = (1800.0 / np.maximum(hf, 1800.0)) ** 1.3
         norm = ref_lvl / lvl[fi]                       # constant vowel loudness
         amp = np.zeros(max_harm)
-        amp[live] = np.interp(hf[live], freqs, env[fi]) * vc * tilt[live] * norm
+        # Reading the envelope at hf/shift moves the formants up by `shift`.
+        amp[live] = (np.interp(hf[live] / formant_shift, freqs, env[fi])
+                     * vc * tilt[live] * norm)
         if amp_prev is None:
             amp_prev = amp
         tt = np.arange(m)
