@@ -148,9 +148,74 @@ ARIA_DIGITAL_HEART = {
     ],
 }
 
+ARIA_MARY = {
+    "bpm": 112, "voice": "en+f4", "base_pitch": 64,
+    "score": [
+        ("Mary", [("E4", 1), ("D4", 1)]), ("had", [("C4", 1)]), ("a", [("D4", 1)]),
+        ("little", [("E4", 1), ("E4", 1)]), ("lamb", [("E4", 2)]), ("rest", 1),
+        ("little", [("D4", 1), ("D4", 1)]), ("lamb", [("D4", 2)]), ("rest", 1),
+        ("little", [("E4", 1), ("G4", 1)]), ("lamb", [("G4", 2)]), ("rest", 1),
+        ("Mary", [("E4", 1), ("D4", 1)]), ("had", [("C4", 1)]), ("a", [("D4", 1)]),
+        ("little", [("E4", 1), ("E4", 1)]), ("lamb", [("E4", 1)]), ("its", [("E4", 1)]),
+        ("rest", 1),
+        ("fleece", [("D4", 1)]), ("was", [("D4", 1)]), ("white", [("E4", 1)]),
+        ("as", [("D4", 1)]), ("snow", [("C4", 3)]),
+    ],
+}
+
+ARIA_ROW = {
+    "bpm": 100, "voice": "en+f4", "base_pitch": 64,
+    "score": [
+        ("row", [("C4", 1)]), ("row", [("C4", 1)]), ("row", [("C4", 1)]),
+        ("your", [("D4", 1)]), ("boat", [("E4", 2)]), ("rest", 1),
+        ("gently", [("E4", 1), ("D4", 1)]), ("down", [("E4", 1)]),
+        ("the", [("F4", 1)]), ("stream", [("G4", 3)]), ("rest", 1),
+        ("merrily", [("C5", 1), ("C5", 1), ("C5", 1)]),
+        ("merrily", [("G4", 1), ("G4", 1), ("G4", 1)]),
+        ("merrily", [("E4", 1), ("E4", 1), ("E4", 1)]),
+        ("merrily", [("C4", 1), ("C4", 1), ("C4", 1)]), ("rest", 1),
+        ("life", [("G4", 1)]), ("is", [("F4", 1)]), ("but", [("E4", 1)]),
+        ("a", [("D4", 1)]), ("dream", [("C4", 3)]),
+    ],
+}
+
+ARIA_JINGLE = {
+    "bpm": 120, "voice": "en+f4", "base_pitch": 64,
+    "score": [
+        ("jingle", [("E4", 1), ("E4", 1)]), ("bells", [("E4", 2)]),
+        ("jingle", [("E4", 1), ("E4", 1)]), ("bells", [("E4", 2)]),
+        ("jingle", [("E4", 1), ("G4", 1)]), ("all", [("C4", 1)]), ("the", [("D4", 1)]),
+        ("way", [("E4", 3)]), ("rest", 1),
+        ("oh", [("F4", 1)]), ("what", [("F4", 1)]), ("fun", [("F4", 1)]),
+        ("it", [("F4", 1)]), ("is", [("F4", 1)]), ("to", [("E4", 1)]),
+        ("ride", [("E4", 2)]), ("rest", 1),
+        ("in", [("E4", 1)]), ("a", [("G4", 1)]), ("one", [("G4", 1)]),
+        ("horse", [("F4", 1)]), ("open", [("D4", 1), ("D4", 1)]), ("sleigh", [("C4", 3)]),
+    ],
+}
+
+# Original ballad -- to show the voice singing something emotive and sustained.
+ARIA_STARLIGHT = {
+    "bpm": 82, "voice": "en+f4", "base_pitch": 64,
+    "score": [
+        ("when", [("E4", 1)]), ("the", [("G4", 1)]), ("stars", [("A4", 2)]),
+        ("come", [("G4", 1)]), ("out", [("E4", 2)]), ("rest", 1),
+        ("I", [("D4", 1)]), ("will", [("E4", 1)]), ("sing", [("G4", 2)]),
+        ("for", [("E4", 1)]), ("you", [("D4", 3)]), ("rest", 1),
+        ("through", [("C4", 1)]), ("the", [("D4", 1)]), ("night", [("E4", 2)]),
+        ("we", [("G4", 1)]), ("will", [("A4", 1)]), ("glow", [("A4", 3)]), ("rest", 1),
+        ("never", [("G4", 1), ("E4", 1)]), ("let", [("D4", 1)]), ("me", [("E4", 1)]),
+        ("go", [("C4", 4)]),
+    ],
+}
+
 ARIA_SONGS = {
     "scale": ARIA_SCALE,
     "twinkle": ARIA_TWINKLE,
     "ode_to_joy": ARIA_ODE,
+    "mary": ARIA_MARY,
+    "row_row": ARIA_ROW,
+    "jingle_bells": ARIA_JINGLE,
+    "starlight": ARIA_STARLIGHT,
     "digital_heart": ARIA_DIGITAL_HEART,
 }
