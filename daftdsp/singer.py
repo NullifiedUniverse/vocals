@@ -204,7 +204,23 @@ def _expression(x, sr, rng, vib_rate=5.7, vib_depth=32.0, vib_delay=0.28,
     ratio -= float(np.mean(ratio))
     read = np.cumsum(1.0 + ratio)
     read = np.clip(read - read[0], 0.0, n - 1)
-    return _read_cubic(x.astype(np.float64), read).astype(np.float32)
+    y = _read_cubic(x.astype(np.float64), read)
+    # Real vibrato modulates loudness a little too (tremolo coupled to pitch).
+    if vib_depth > 0:
+        env = np.clip((t / sr - vib_delay) / 0.3, 0.0, 1.0)
+        y = y * (1.0 + 0.05 * env * np.sin(2.0 * np.pi * vib_rate * t / sr + 0.6))
+    return y.astype(np.float32)
+
+
+def _deess(x, sr, amount=0.6):
+    """Tame sibilants ('s'/'sh') so the air boost doesn't get harsh."""
+    hi = biquad_fft(highpass(6500.0, sr, 0.7), x)
+    lo = np.asarray(x, dtype=np.float64) - hi
+    env = one_pole_lp_fft(np.abs(hi), sr, 55.0)
+    nz = env[env > 1e-5]
+    thr = 1.6 * float(np.median(nz)) if nz.size else 1.0
+    gain = one_pole_lp_fft(np.clip(thr / (env + 1e-6), 1.0 - amount, 1.0), sr, 80.0)
+    return (lo + hi * gain).astype(np.float32)
 
 
 def _voice_timbre(x, sr):
@@ -305,6 +321,7 @@ def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64,
     """Full render: sing -> timbre-shape -> stereo -> reverb."""
     dry = sing(score, sr, bpm, voice, base_pitch)
     dry = _voice_timbre(dry, sr)
+    dry = _deess(dry, sr)
     dry = util.normalize_peak(dry, 0.92)
     stereo = effects.stereoize(dry, sr, haas_ms=9.0, width=width)
     stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.48,
