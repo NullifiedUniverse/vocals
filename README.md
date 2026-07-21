@@ -56,12 +56,12 @@ The package `daftdsp/` is one module per DSP stage:
 |---|---|
 | `util.py`     | RIFF WAV read/write (PCM + 32-bit float), cubic resampler, note/scale math |
 | `biquad.py`   | RBJ-cookbook biquad coefficients; Direct-Form-II-Transposed recursion; **exact transfer-function filtering via FFT** for speed; parallel band-bank |
-| `synth.py`    | Polyphonic carrier: detuned super-saws + PWM pulses, PolyBLEP band-limiting, ±1 octave layering |
+| `synth.py`    | Polyphonic carrier: detuned super-saws + PWM pulses, PolyBLEP band-limiting, ±1 octave layering, vibrato, and crossfaded chord **progressions** |
 | `pitch.py`    | **YIN** fundamental-frequency tracking + musical scale quantisation |
 | `psola.py`    | **TD-PSOLA** hard auto-tune — pitch-synchronous overlap-add, formant-preserving, near-zero retune time |
 | `vocoder.py`  | 32-band channel vocoder: band-pass split, full-wave-rectify + low-pass envelope, carrier gating, sibilance path |
 | `formant.py`  | Talkbox: resonant vowel formant peaks (F1–F3), formant shift, vowel morphing |
-| `effects.py`  | `tanh` saturation · 4–8 all-pass LFO phaser · kick + sidechain compressor · 150 Hz HP / 6 kHz shelf EQ · Haas stereo widener |
+| `effects.py`  | `tanh` saturation · 4–8 all-pass LFO phaser · kick + sidechain compressor · Schroeder/Moorer stereo **reverb** · 150 Hz HP / 6 kHz shelf EQ · Haas stereo widener |
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Around The World, One More Time, …) |
@@ -100,9 +100,10 @@ All of these are exposed as sliders/toggles and accepted by the API (see
 
 - **Voice/TTS** — `text`, `voice`, `wpm`, `tts_pitch`
 - **Auto-tune** — `enable_autotune`, `key_root`, `scale`, `retune`, `retune_time_ms`
-- **Carrier synth** — `chord_root`, `chord_quality`, `saw_level`, `pulse_level`,
-  `pulse_width`, `pwm_rate`, `pwm_depth`, `detune_cents`, `detune_voices`,
-  `octave_layer`, `sub_level`, `synth_level`
+- **Carrier synth** — `chord_root`, `chord_quality`, `chord_prog` (progression,
+  e.g. `["A3:min7","F3:maj7"]`), `saw_level`, `pulse_level`, `pulse_width`,
+  `pwm_rate`, `pwm_depth`, `detune_cents`, `detune_voices`, `octave_layer`,
+  `sub_level`, `vibrato_rate`, `vibrato_depth`, `synth_level`
 - **Vocoder** — `enable_vocoder`, `n_bands`, `band_lo`, `band_hi`, `band_q`,
   `voc_attack_ms`, `voc_release_ms`, `formant_shift`, `sibilance`,
   `vocoder_mix`, `dry_voice_mix`
@@ -113,8 +114,10 @@ All of these are exposed as sliders/toggles and accepted by the API (see
   `phaser_feedback`
 - **Sidechain** — `enable_sidechain`, `sc_amount`, `sc_threshold_db`, `sc_ratio`,
   `sc_attack_ms`, `sc_release_ms`, `kick_bpm`
+- **Reverb** — `enable_reverb`, `reverb_mix`, `reverb_size`, `reverb_damp`,
+  `reverb_width`
 - **EQ/stereo** — `enable_eq`, `eq_hp`, `eq_shelf_freq`, `eq_shelf_db`,
-  `haas_ms`, `width`, `output_gain`
+  `haas_ms`, `width`, `warmth_hz` (output low-pass), `output_gain`
 
 ## I/O
 

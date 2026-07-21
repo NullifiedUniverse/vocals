@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .biquad import biquad_fft, high_shelf, highpass
+from .biquad import biquad_fft, high_shelf, highpass, lowpass
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +141,69 @@ def eq(x, sr, *, hp_freq=150.0, shelf_freq=6000.0, shelf_gain_db=4.0):
     if abs(shelf_gain_db) > 0.01:
         chain.append(high_shelf(shelf_freq, sr, shelf_gain_db))
     return biquad_fft(chain, x)
+
+
+def _comb(x, delay, g):
+    """Feedback comb y[n] = x[n] + g*y[n-D], vectorised a delay-block at a time
+    (within one block of length ``delay`` there is no self-dependency)."""
+    n = x.size
+    d = max(1, int(delay))
+    y = x.astype(np.float64).copy()
+    for s in range(d, n, d):
+        e = min(n, s + d)
+        m = e - s
+        y[s:e] += g * y[s - d:s - d + m]
+    return y
+
+
+def _allpass(x, delay, g):
+    n = x.size
+    d = max(1, int(delay))
+    y = np.zeros(n)
+    xd = np.zeros(n)
+    xd[d:] = x[:n - d]
+    for s in range(0, n, d):
+        e = min(n, s + d)
+        m = e - s
+        yprev = y[s - d:s - d + m] if s >= d else np.zeros(m)
+        y[s:e] = -g * x[s:e] + xd[s:e] + g * yprev
+    return y
+
+
+def reverb(stereo, sr, *, mix=0.25, size=0.6, damp=0.5, width=1.0):
+    """Schroeder/Moorer stereo reverb (four combs + two all-passes per side),
+    all hand-written.  Adds the space/tail that makes the voice sit and breathe."""
+    if mix <= 0.0:
+        return stereo
+    x = np.asarray(stereo, dtype=np.float64)
+    send = x.mean(axis=1)                         # mono reverb send
+    scale = 0.7 + 1.1 * float(np.clip(size, 0.0, 1.0))
+    g = 0.72 + 0.24 * float(np.clip(size, 0.0, 1.0))
+    dmp = float(np.clip(damp, 0.0, 0.95))
+
+    comb_ms = np.array([29.7, 37.1, 41.1, 43.7])
+    ap_ms = np.array([5.0, 1.7])
+    # Damping = a low-pass on the wet tail (darker as `damp` rises).
+    cutoff = 12000.0 * (1.0 - dmp) + 1800.0 * dmp
+
+    def one_side(offset):
+        wet = np.zeros(send.size)
+        for cm in comb_ms:
+            wet += _comb(send, (cm + offset) * 1e-3 * sr * scale, g)
+        wet /= len(comb_ms)
+        for am in ap_ms:
+            wet = _allpass(wet, am * 1e-3 * sr * scale, 0.7)
+        return biquad_fft(lowpass(cutoff, sr, 0.6), wet)
+
+    left = one_side(0.0)
+    right = one_side(0.9)                          # detune delays -> stereo spread
+    mono = 0.5 * (left + right)
+    sidew = 0.5 * (left - right) * width
+    wl = mono + sidew
+    wr = mono - sidew
+    m = max(float(np.max(np.abs([wl, wr]))), 1e-9)
+    wet = np.stack([wl, wr], axis=1) / m
+    return ((1.0 - mix) * x + mix * wet).astype(np.float32)
 
 
 def stereoize(x, sr, *, haas_ms=20.0, width=1.0, level=1.0):

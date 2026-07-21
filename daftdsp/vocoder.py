@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .biquad import BandBank, bandpass, biquad_fft, highpass, one_pole_lp_fft
+from .biquad import (BandBank, bandpass, biquad_fft, highpass, lowpass,
+                     one_pole_lp_fft)
+from .util import normalize_percentile
 
 
 def band_frequencies(n_bands=32, f_lo=100.0, f_hi=10000.0):
@@ -88,17 +90,20 @@ def vocode(modulator, carrier, sr, *, n_bands=32, f_lo=100.0, f_hi=10000.0,
         out = _vocode_fft(modulator, carrier, freqs, car_freqs, sr,
                           band_q, release_ms)
 
-    # Unvoiced-consonant path: high-band voice energy modulates white noise so
-    # sibilants survive the tonal carrier.
+    out = out[:n]
+    # Unvoiced-consonant path: high-band voice energy modulates *band-limited*
+    # noise (breath/air, ~3.5-9 kHz), gated so it only appears on real
+    # consonants -- not the harsh full-band hiss of the first version.
     if sibilance > 0.0:
-        hp = biquad_fft(highpass(3500.0, sr, 0.7), modulator)
-        s_env = one_pole_lp_fft(np.abs(hp), sr, 60.0)
-        noise = np.random.default_rng(7).standard_normal(n)
-        out = out[:n] + sibilance * 3.0 * s_env * noise
+        hp = biquad_fft(highpass(4000.0, sr, 0.7), modulator)
+        s_env = one_pole_lp_fft(np.abs(hp), sr, 45.0)
+        floor = 0.06 * float(np.max(s_env)) if out.size else 0.0
+        s_env = np.maximum(s_env - floor, 0.0)          # noise gate
+        air = np.random.default_rng(7).standard_normal(n)
+        air = biquad_fft([highpass(3500.0, sr, 0.7), lowpass(9000.0, sr, 0.7)], air)
+        out = out + sibilance * 1.6 * s_env * air
 
-    peak = float(np.max(np.abs(out))) if out.size else 0.0
-    if peak > 1e-9:
-        out = out / peak
+    out = normalize_percentile(out, target=0.9)
     return (out * level).astype(np.float32)
 
 

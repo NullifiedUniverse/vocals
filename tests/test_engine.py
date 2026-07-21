@@ -91,6 +91,15 @@ def test_effects_finite():
     assert np.all(np.isfinite(effects.sidechain(x, kick, SR)))
     st = effects.stereoize(x, SR)
     assert st.shape == (x.size, 2)
+    rv = effects.reverb(st, SR, mix=0.3, size=0.6, damp=0.5)
+    assert rv.shape == st.shape and np.all(np.isfinite(rv))
+
+
+def test_carrier_progression():
+    prog = synth.parse_progression(["A3:min7", "F3:maj7", "C4:maj7"])
+    assert len(prog) == 3 and all(isinstance(c, list) for c in prog)
+    car = synth.render_carrier(SR, SR, prog, vibrato_depth=0.1)
+    assert car.size == SR and np.all(np.isfinite(car))
 
 
 def test_wav_roundtrip():

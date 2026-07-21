@@ -42,8 +42,9 @@ class EngineParams:
     # --- Carrier synth ---
     chord_root: str = "A3"
     chord_quality: str = "min7"
+    chord_prog: list = field(default_factory=list)   # e.g. ["A3:min7","F3:maj7"]
     saw_level: float = 0.8
-    pulse_level: float = 0.5
+    pulse_level: float = 0.45
     detune_cents: float = 16.0
     detune_voices: int = 3
     pulse_width: float = 0.5
@@ -51,6 +52,8 @@ class EngineParams:
     pwm_depth: float = 0.25
     octave_layer: bool = True
     sub_level: float = 0.5
+    vibrato_rate: float = 5.5
+    vibrato_depth: float = 0.07
     synth_level: float = 1.0
 
     # --- Vocoder ---
@@ -58,11 +61,11 @@ class EngineParams:
     n_bands: int = 32
     band_lo: float = 100.0
     band_hi: float = 10000.0
-    band_q: float = 7.0
-    voc_attack_ms: float = 3.0
-    voc_release_ms: float = 18.0
+    band_q: float = 6.0
+    voc_attack_ms: float = 4.0
+    voc_release_ms: float = 22.0
     formant_shift: float = 1.0
-    sibilance: float = 0.4
+    sibilance: float = 0.18
     vocoder_mix: float = 1.0
     dry_voice_mix: float = 0.0
 
@@ -71,21 +74,21 @@ class EngineParams:
     vowel: str = "a"
     vowel2: str = ""
     morph_rate: float = 0.0
-    formant_resonance: float = 7.0
-    formant_gain_db: float = 8.0
-    talkbox_amount: float = 0.45
+    formant_resonance: float = 6.0
+    formant_gain_db: float = 6.0
+    talkbox_amount: float = 0.35
 
     # --- Saturation ---
     enable_saturation: bool = True
-    sat_drive: float = 2.0
-    sat_mix: float = 0.8
+    sat_drive: float = 1.4
+    sat_mix: float = 0.4
 
     # --- Phaser ---
     enable_phaser: bool = True
-    phaser_rate: float = 0.3
-    phaser_depth: float = 0.5
+    phaser_rate: float = 0.28
+    phaser_depth: float = 0.35
     phaser_stages: int = 6
-    phaser_feedback: float = 0.35
+    phaser_feedback: float = 0.25
 
     # --- Sidechain ---
     enable_sidechain: bool = True
@@ -96,13 +99,21 @@ class EngineParams:
     sc_amount: float = 0.8
     kick_bpm: float = 120.0
 
+    # --- Reverb ---
+    enable_reverb: bool = True
+    reverb_mix: float = 0.22
+    reverb_size: float = 0.6
+    reverb_damp: float = 0.5
+    reverb_width: float = 1.0
+
     # --- EQ / stereo ---
     enable_eq: bool = True
     eq_hp: float = 150.0
     eq_shelf_freq: float = 6000.0
-    eq_shelf_db: float = 4.0
+    eq_shelf_db: float = 2.5
     haas_ms: float = 18.0
     width: float = 1.15
+    warmth_hz: float = 11000.0
     output_gain: float = 1.0
 
     @classmethod
@@ -163,17 +174,23 @@ def process(params: EngineParams, vocal=None, chord_midi=None, kick=None):
             vocal, sr, track, key_root=params.key_root, scale=params.scale,
             retune=params.retune, retune_time_ms=params.retune_time_ms)
 
-    # 3) Carrier synth.
+    # 3) Carrier synth (static chord or a crossfaded progression).
     if chord_midi is None:
-        chord_midi = synth.parse_chord(params.chord_root, params.chord_quality)
-    meta["chord_midi"] = list(chord_midi)
+        if params.chord_prog:
+            chord_midi = synth.parse_progression(params.chord_prog)
+        else:
+            chord_midi = synth.parse_chord(params.chord_root, params.chord_quality)
+    is_prog = len(chord_midi) and isinstance(chord_midi[0], (list, tuple))
+    meta["chord_midi"] = list(chord_midi[0]) if is_prog else list(chord_midi)
+    meta["n_chords"] = len(chord_midi) if is_prog else 1
     carrier = synth.render_carrier(
         n, sr, chord_midi,
         saw_level=params.saw_level, pulse_level=params.pulse_level,
         detune_cents=params.detune_cents, detune_voices=params.detune_voices,
         pulse_width=params.pulse_width, pwm_rate=params.pwm_rate,
         pwm_depth=params.pwm_depth, octave_layer=params.octave_layer,
-        sub_level=params.sub_level, level=params.synth_level)
+        sub_level=params.sub_level, vibrato_rate=params.vibrato_rate,
+        vibrato_depth=params.vibrato_depth, level=params.synth_level)
 
     # 4) Channel vocoder (voice modulates synth).
     if params.enable_vocoder:
@@ -225,8 +242,17 @@ def process(params: EngineParams, vocal=None, chord_midi=None, kick=None):
     stereo = effects.stereoize(voice, sr, haas_ms=params.haas_ms,
                                width=params.width, level=params.output_gain)
 
-    # Final safety: normalise then gentle limit.
-    stereo = util.normalize_peak(stereo, 0.97)
-    stereo = util.soft_limit(stereo, 0.99)
+    # 8) Reverb for space, then a warmth low-pass to tame harsh highs.
+    if params.enable_reverb and params.reverb_mix > 0:
+        stereo = effects.reverb(stereo, sr, mix=params.reverb_mix,
+                                size=params.reverb_size, damp=params.reverb_damp,
+                                width=params.reverb_width)
+    if params.warmth_hz < sr * 0.45:
+        from .biquad import biquad_fft, lowpass
+        stereo = biquad_fft(lowpass(params.warmth_hz, sr, 0.7), stereo)
+
+    # Final level: percentile-normalise (consistent loudness) then gentle limit.
+    stereo = util.normalize_percentile(stereo, target=0.82, pct=99.5)
+    stereo = util.soft_limit(stereo, 0.98)
     meta["peak"] = round(float(np.max(np.abs(stereo))), 3)
     return stereo, meta

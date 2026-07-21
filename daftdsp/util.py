@@ -235,6 +235,21 @@ def normalize_peak(x: np.ndarray, peak: float = 0.97) -> np.ndarray:
     return (x * (peak / m)).astype(np.float32)
 
 
+def normalize_percentile(x: np.ndarray, target: float = 0.85,
+                         pct: float = 99.5) -> np.ndarray:
+    """Scale so the ``pct``-th percentile of |x| hits ``target``.
+
+    Unlike peak normalisation this ignores a handful of stray transients, so the
+    perceived loudness is consistent from render to render and the signal isn't
+    dragged down (and then noise-amplified) by one spike."""
+    if x.size == 0:
+        return x
+    ref = float(np.percentile(np.abs(x), pct))
+    if ref < 1e-9:
+        return x
+    return (x * (target / ref)).astype(np.float32)
+
+
 def db_to_lin(db: float) -> float:
     return float(10.0 ** (db / 20.0))
 
