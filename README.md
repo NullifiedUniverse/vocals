@@ -1,33 +1,34 @@
-# 🤖 Vocal DSP — a robot voice and a singing voice
+# 🎤 Aria — a lifelike singing voice
 
-Two vocal synthesisers sharing one hand-written DSP core, in one web app:
+Give it words and a melody; it sings them.
 
-- 🤖 **Robot** — turn text into **Daft-Punk-style robot vocals**: espeak speech,
-  auto-tuned, vocoded through a polyphonic synth, then talkbox + saturation +
-  phaser + sidechain + stereo, with a wall of sliders.
-- 🎤 **Aria** — turn **words + a melody into singing**: a neural voice speaks the
-  phrase, and it is warped onto the tune (vowels stretched to their notes, legato
-  glides, vibrato) by a WORLD-vocoder re-pitch.
-
-The **robot voice and the shared DSP core are written entirely from scratch** in
-plain NumPy — no scipy, no librosa, no DSP libraries; `numpy.fft` is used only as
-a math primitive. The **singing voice** additionally uses a neural TTS (Piper)
-and the WORLD vocoder, because the *source* voice — not the processing — was what
-limited how lifelike it could sound. See [DESIGN.md](DESIGN.md) for the
-architecture, the pipeline and that diagnosis.
+A neural voice speaks each phrase, and the WORLD vocoder places that real human
+timbre onto the tune. Every stage is modelled on what human singers measurably
+do — vowels land on the beat, sustained notes hold steady breath support, vibrato
+enters after the note settles — and each of those is asserted by a test.
 
 ```
- ROBOT   text ─► [espeak] ─► [PSOLA auto-tune] ─┐
-                                                ▼
-         chord ─► [poly synth] ────────► [32-band vocoder] ─► [formant/talkbox]
-                                                │
-                                                ▼
-         output ◄─ [stereo/EQ] ◄─ [sidechain] ◄─ [phaser] ◄─ [tanh saturation]
-
- ARIA    words+notes ─► [Piper neural speech + phoneme alignments]
-                     ─► [align vowels to notes] ─► [warp time] ─► [replace f0]
-                     ─► [WORLD resynthesis] ─► [sung dynamics] ─► [master]
+ words + notes ─► [neural voice speaks the phrase, with phoneme timings]
+               ─► [vowels aligned to beats, consonants placed before them]
+               ─► [WORLD: hold the vowel, replace the pitch]
+               ─► [sung dynamics: steady sustain, vibrato, phrase arch]
+               ─► [restore chest body, a touch of room]  ─► voice
 ```
+
+Measured against human singing (see `tools/report.py`):
+
+| | Aria | human singers |
+|---|---|---|
+| vibrato rate | 6.1 Hz | 5.5–7.5 Hz |
+| vibrato extent | 33 cents | 30–60 cents |
+| pitch steadiness | 20 cents drift | < 25 cents |
+| loudness ripple | 0.10 | 0.03–0.12 |
+| sustain decay | 0.92 | ~1.0 (no fade) |
+| tuning | within a few cents of every note | — |
+
+There is also a **🤖 Robot** tab: the original Daft-Punk-style vocoder engine,
+still written entirely from scratch in NumPy (no DSP libraries). It is kept
+intact but is no longer where the effort goes.
 
 ## Quick start
 
@@ -43,9 +44,9 @@ python3 -m pip install -r requirements.txt
 ./run.sh                 # or:  PORT=8000 python3 server/app.py
 ```
 
-Open **http://localhost:8000** and use the **Robot** / **Sing** tabs. The Sing
-tab shows a live quality readout (notes in tune, mean cents error, clicks,
-dropout) with every render.
+Open **http://localhost:8000**. It opens on the **Sing** tab, which shows a live
+quality readout (notes in tune, mean cents error, clicks, dropout) with every
+render; the **Robot** tab holds the older vocoder engine.
 
 ### Command line (no server)
 

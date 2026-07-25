@@ -191,6 +191,59 @@ def dropout_ratio(x, sr, timeline=None, floor=0.08, frame_ms=20.0):
 # tone
 # ---------------------------------------------------------------------------
 
+def sung_note(x, sr, midi=None):
+    """Measure one sustained note against how a human singer behaves.
+
+    Returned values and the human range each should fall in:
+
+    ``vibrato_hz``      5.5-7.5   rate of the pitch modulation
+    ``vibrato_cents``   30-60     its extent (peak deviation)
+    ``pitch_drift``     < 25      steadiness of the note's centre, in cents
+    ``amp_ripple``      0.03-0.12 how much the loudness moves during the sustain
+    ``decay_ratio``     ~1.0      end-of-sustain level / start-of-sustain level;
+                                  well below 1 means the note faded out
+
+    Pitch statistics are taken from the *voiced, in-range* part only, because a
+    tracker's octave slips on the unvoiced tail otherwise dominate the numbers.
+    """
+    m = to_mono(x)
+    tr = _pitch.track_pitch(m, sr, max_f0=1200.0)
+    f0, _ = tr.to_per_sample(m.size)
+    v = f0[f0 > 0]
+    if v.size < sr // 50:
+        return {}
+    centre = float(np.median(v))
+    keep = v[(v > centre * 0.7) & (v < centre * 1.4)]        # drop octave slips
+    cents = 1200.0 * np.log2(keep / centre) if keep.size else np.zeros(1)
+
+    c = cents - cents.mean()
+    spec = np.abs(np.fft.rfft(c * np.hanning(c.size))) if c.size > 64 else None
+    vib_hz = vib_cents = 0.0
+    if spec is not None:
+        fr = np.fft.rfftfreq(c.size, 1.0 / sr)
+        band = (fr >= 3.0) & (fr <= 9.0)
+        if band.any():
+            vib_hz = float(fr[band][np.argmax(spec[band])])
+            vib_cents = float(np.sqrt(2.0) * np.std(c))      # peak of a sinusoid
+
+    env = _frame_rms(m, sr, 25.0)
+    live = env[env > 0.2 * (env.max() or 1.0)]
+    ripple = float(np.std(live) / (np.mean(live) + 1e-12)) if live.size else 0.0
+    if live.size >= 6:
+        head = float(np.mean(live[:max(1, live.size // 4)]))
+        tail = float(np.mean(live[-max(1, live.size // 4):]))
+        decay = tail / (head + 1e-12)
+    else:
+        decay = 1.0
+
+    out = {"vibrato_hz": vib_hz, "vibrato_cents": vib_cents,
+           "pitch_drift": float(np.std(cents)), "amp_ripple": ripple,
+           "decay_ratio": float(decay), "centre_hz": centre}
+    if midi is not None:
+        out["cents_off"] = float(1200.0 * np.log2(centre / midi_to_freq(midi)))
+    return out
+
+
 def spectral_balance(x, sr, bands=BANDS):
     """Percentage of spectral energy per band, plus the centroid in Hz."""
     m = to_mono(x)

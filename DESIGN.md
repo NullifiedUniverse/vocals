@@ -43,26 +43,28 @@ The **robot voice remains 100% from-scratch** — that was its original brief �
 nothing in the shared DSP core depends on these libraries. If no neural model is
 present, `voice.py` falls back to espeak so the package still runs.
 
-## Aria singing pipeline
+## Aria singing pipeline — modelled on human singers
 
-Rendered **one phrase at a time** (a phrase = the words between rests) so that
-pronunciation and flow come from real, continuous speech:
+Rendered one **phrase** at a time (the words between rests). Each stage encodes a
+measured behaviour of human singing rather than whatever is easiest to compute:
 
-| Stage | What happens | Why |
+| Stage | What happens | The human behaviour it encodes |
 |---|---|---|
-| 1. Speak | Piper says the whole phrase as one natural utterance | correct pronunciation + coarticulation between words |
-| 2. Align | vowel phonemes (from Piper's alignments) are the syllable nuclei; matched to the score's notes | the right sound lands on the right note, with no guessing |
+| 1. Speak | the neural voice says the whole phrase, reporting phoneme spans | pronunciation and word-to-word flow come from real continuous speech |
+| 2. Plan | each **vowel onset is placed on its beat**; the consonant occupies the time just before it, borrowed from the previous note | singers carry rhythm with vowels and put consonants ahead of the beat |
 | 3. Analyse | WORLD splits the phrase into f0 / spectral envelope / aperiodicity | pitch becomes independent of vowel identity and timbre |
-| 4. Warp | a frame trajectory holds each vowel across its note; consonants keep their natural length (compressed only if a note is too short) | intelligible words, the score's rhythm |
-| 5. Re-pitch | f0 is replaced by the melody + legato glides + vibrato that swells in | the tune, sung, with the envelope untouched |
-| 6. Synthesise | WORLD resynthesis | no grains, no splices, no clicks |
-| 7. Shape | sung dynamics (every syllable gets full voice) + phrase arc | speech stresses words; singing does not |
-| 8. Master | timbre EQ → de-ess → stereo → reverb → normalise → limit | finished sound |
+| 4. Hold | the **steadiest** stretch of each vowel (lowest spectral flux) is found and sustained | a singer settles into a vowel posture and holds it, rather than freezing a transitional moment |
+| 5. Pitch | melody with ~70 ms legato glides, vibrato at 6 Hz / ±58 cents entering after 250 ms, plus small jitter | measured vibrato rate, extent and onset delay; phonation is never perfectly periodic |
+| 6. Synthesise | WORLD resynthesis | no grains, no splices |
+| 7. Loudness | the sustain is levelled **after** synthesis, with attack, phrase arch, tremolo and shimmer | steady subglottal pressure gives a steady note; phrases arch and are released at the end |
+| 8. Output | restore chest body, optional small room, mono | a solo singer is a point source |
 
-The warp trajectory is built to be **continuous and corner-free**: a jump in read
-position is an abrupt spectral change (a click), and a step in its *slope* is a
-sudden change of read-rate (a tick), so the sections join at shared knots and the
-result is lightly smoothed.
+Loudness has to be corrected after synthesis, not in the envelope: WORLD's output
+level depends on the f0 it is given as well as on the spectral envelope, so
+flattening `sp` alone still let a sustained note decay from 0.18 to 0.004.
+
+Effects that make a solo voice sound *processed* — chorus, stereo widening, large
+reverb — were removed.
 
 ### Sample rate
 

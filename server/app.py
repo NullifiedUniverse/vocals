@@ -113,8 +113,7 @@ def sing_meta():
         "neural": voice.available(),
         "voice_model": voice.DEFAULT_VOICE,
         "defaults": {"bpm": 108, "formant_shift": 1.0, "breath": 0.0,
-                     "vib_depth": 22.0, "vib_rate": 5.5, "glide_ms": 45.0,
-                     "reverb_mix": 0.16, "width": 1.15},
+                     "room": 0.08},
     })
 
 
@@ -127,14 +126,10 @@ def _sing_render(payload):
     kw = dict(
         formant_shift=float(p.get("formant_shift", 1.0)),
         breath=float(p.get("breath", 0.0)),
-        vib_depth=float(p.get("vib_depth", 22.0)),
-        vib_rate=float(p.get("vib_rate", 5.5)),
-        glide_ms=float(p.get("glide_ms", 45.0)),
     )
     t0 = time.time()
     stereo = singer.render_song(score, sr=sr, bpm=bpm,
-                                reverb_mix=float(p.get("reverb_mix", 0.16)),
-                                width=float(p.get("width", 1.15)), **kw)
+                                room=float(p.get("room", 0.08)), **kw)
     # Quality is reported from the dry signal (reverb smears pitch tracking).
     dry = singer.sing(score, sr, bpm, **kw)
     rep = quality.summarize(dry, sr, note_timeline(score, bpm))
