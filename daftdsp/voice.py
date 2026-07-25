@@ -115,6 +115,51 @@ class Utterance:
             return 0, self.audio.size
         return spoken[0].start, min(spoken[-1].end, self.audio.size)
 
+    def legato(self, keep_ms: float = 12.0, fade_ms: float = 8.0) -> "Utterance":
+        """Close the pauses *between words* so the phrase runs on without gaps.
+
+        Speech separates words with short silences; singing does not -- within a
+        breath a singer runs the words together, and those pauses are exactly
+        what makes a sung line sound like stretched speech.  Each internal
+        silence is cut to ``keep_ms`` and the join is cross-faded so nothing
+        clicks.
+        """
+        lo, hi = self.speech_span()
+        gaps = [p for p in self.phones
+                if p.is_silence and p.start >= lo and p.end <= hi
+                and p.end - p.start > keep_ms / 1000.0 * self.sr]
+        if not gaps:
+            return self
+
+        keep = int(keep_ms / 1000.0 * self.sr)
+        fade = int(fade_ms / 1000.0 * self.sr)
+        pieces, shift, cuts, pos = [], 0, [], 0
+        for g in gaps:
+            pieces.append(self.audio[pos:g.start + keep // 2])
+            cuts.append((g.end - keep // 2, (g.end - g.start) - keep))
+            pos = g.end - keep // 2
+        pieces.append(self.audio[pos:])
+
+        out = pieces[0].astype(np.float32)
+        for piece in pieces[1:]:
+            f = min(fade, out.size, piece.size)
+            if f > 1:
+                ramp = np.linspace(0.0, 1.0, f, dtype=np.float32)
+                joined = out[-f:] * (1 - ramp) + piece[:f] * ramp
+                out = np.concatenate([out[:-f], joined, piece[f:]])
+            else:
+                out = np.concatenate([out, piece])
+
+        def remap(s: int) -> int:
+            for cut_at, amount in cuts:
+                if s >= cut_at:
+                    s -= amount
+            return max(0, min(s, out.size))
+
+        phones = [Phone(p.symbol, remap(p.start), remap(p.end))
+                  for p in self.phones]
+        return Utterance(out, self.sr, [p for p in phones if p.end > p.start])
+
     def vowel_groups(self) -> list[tuple[int, int]]:
         """Contiguous vowel runs (diphthongs stay one group) as sample spans."""
         groups, cur = [], None
@@ -145,7 +190,16 @@ class NeuralVoice:
         self.sr = int(self._voice.config.sample_rate)
 
     def speak(self, text: str) -> Utterance:
-        chunks = list(self._voice.synthesize(text, include_alignments=True))
+        # The model is a VITS variant: by default it samples noise for both the
+        # waveform and the phoneme durations, so the same words come out slightly
+        # different every render -- and some takes are audibly worse than others.
+        # Zeroing both makes a phrase reproducible, which is what a score should
+        # be: the same input must always give the same performance.
+        from piper import SynthesisConfig
+
+        cfg = SynthesisConfig(noise_scale=0.0, noise_w_scale=0.0)
+        chunks = list(self._voice.synthesize(text, syn_config=cfg,
+                                             include_alignments=True))
         audio = np.concatenate([c.audio_float_array for c in chunks]).astype(np.float32)
         phones, pos = [], 0
         for c in chunks:

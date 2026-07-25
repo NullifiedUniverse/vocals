@@ -264,6 +264,143 @@ def spectral_balance(x, sr, bands=BANDS):
 # roll-up
 # ---------------------------------------------------------------------------
 
+def note_levels(x, sr, timeline, voiced_only=True):
+    """Loudness of each note, measured over its **voiced** part.
+
+    Consonants are legitimately quieter than vowels, so measuring a whole slot
+    penalises notes that happen to carry a long consonant.  What matters for
+    evenness is that the sung part of every note sits at the same level.
+    """
+    m = to_mono(x)
+    if voiced_only:
+        tr = _pitch.track_pitch(m, sr, max_f0=1200.0)
+        f0, _ = tr.to_per_sample(m.size)
+    else:
+        f0 = np.ones(m.size)
+    out = []
+    for start, dur, _ in timeline:
+        a, b = int(start * sr), min(int((start + dur) * sr), m.size)
+        if b - a < 32:
+            out.append(0.0)
+            continue
+        seg, v = m[a:b], f0[a:b]
+        live = seg[(v > 0) & (np.abs(seg) > 0.02 * (np.abs(seg).max() or 1.0))]
+        out.append(float(np.sqrt(np.mean(live ** 2))) if live.size > 16 else 0.0)
+    return np.array(out)
+
+
+def evenness(x, sr, timeline):
+    """How consistent the notes are in loudness (1.0 = identical).
+
+    Reported as the ratio between the 90th and 10th percentile note level, which
+    ignores one odd note but catches a line that genuinely swings.
+    """
+    lv = note_levels(x, sr, timeline)
+    lv = lv[lv > 1e-6]
+    if lv.size < 2:
+        return {"spread": 1.0, "cv": 0.0}
+    if lv.size < 5:
+        # Too few notes for percentiles to mean anything -- compare directly.
+        hi, lo = float(lv.max()), float(lv.min())
+        return {"spread": hi / max(lo, 1e-9),
+                "cv": float(np.std(lv) / (np.mean(lv) + 1e-12))}
+    hi = float(np.percentile(lv, 90))
+    lo = float(np.percentile(lv, 10))
+    return {"spread": hi / max(lo, 1e-9),
+            "cv": float(np.std(lv) / (np.mean(lv) + 1e-12))}
+
+
+def flow(x, sr, timeline, floor=0.06, min_gap_ms=40.0):
+    """Silence *inside* a sung phrase -- gaps break the legato line.
+
+    Only the span covered by notes is examined, and only gaps longer than
+    ``min_gap_ms`` count, so ordinary stop closures are not mistaken for breaks.
+    """
+    m = to_mono(x)
+    if not timeline:
+        return {"gap_ratio": 0.0, "gaps": 0, "longest_ms": 0.0}
+    frame = 0.01
+    env = _frame_rms(m, sr, frame * 1000.0)
+    peak = float(env.max()) or 1.0
+    # Each note is examined on its own.  Rests between phrases are supposed to be
+    # silent, and runs must never be measured across a removed region -- doing
+    # that joins frames either side of a rest and invents gaps that aren't there.
+    gaps, total = [], 0
+    for start, dur, _ in timeline:
+        a = max(0, int(start / frame))
+        b = min(env.size, int((start + dur) / frame))
+        if b - a < 2:
+            continue
+        quiet = env[a:b] < floor * peak
+        total += quiet.size
+        run = 0
+        for q in quiet:
+            if q:
+                run += 1
+            elif run:
+                gaps.append(run)
+                run = 0
+        if run:
+            gaps.append(run)
+    if total < 8:
+        return {"gap_ratio": 0.0, "gaps": 0, "longest_ms": 0.0}
+    long_gaps = [g for g in gaps if g * frame * 1000.0 >= min_gap_ms]
+    return {"gap_ratio": float(sum(long_gaps) / total),
+            "gaps": len(long_gaps),
+            "longest_ms": float(max(long_gaps, default=0) * frame * 1000.0)}
+
+
+def _band(value, good, bad):
+    """Map a measurement onto 0-100, where ``good`` scores 100 and ``bad`` 0."""
+    if good == bad:
+        return 100.0
+    t = (value - bad) / (good - bad)
+    return float(np.clip(t, 0.0, 1.0) * 100.0)
+
+
+def score(x, sr, timeline):
+    """Score a sung render out of 100, with a breakdown.
+
+    The weights reflect how audible each fault is: being out of tune or having
+    notes drop out is far worse than a slightly uneven phrase.
+    """
+    m = to_mono(x)
+    rep = summarize(m, sr, timeline)
+    ev = evenness(m, sr, timeline)
+    fl = flow(m, sr, timeline)
+    p = rep.get("pitch", {})
+
+    parts = {
+        # in tune: 0 cents is perfect, 50 cents (a quarter tone) is a fail
+        "tuning": (_band(p.get("mean_abs_cents", 99.0), 0.0, 50.0), 25),
+        # every note audible for its whole length
+        "sustain": (0.5 * _band(rep["dropout"], 0.0, 0.25)
+                    + 0.5 * _band(rep["sustain_cv"], 0.15, 0.9), 20),
+        # notes at a consistent level
+        "evenness": (_band(ev["spread"], 1.1, 3.0), 20),
+        # no clicks, clipping or DC
+        "cleanliness": (0.6 * _band(rep["discontinuity"]["rate"], 0.0, 2e-3)
+                        + 0.2 * _band(rep["headroom"]["clipped"], 0, 200)
+                        + 0.2 * _band(abs(rep["headroom"]["dc"]), 0.0, 0.02), 20),
+        # a connected line, no holes
+        "flow": (_band(fl["gap_ratio"], 0.0, 0.15), 15),
+    }
+    total = sum(v * w for v, w in parts.values()) / sum(w for _, w in parts.values())
+    return {"total": round(total, 1),
+            "parts": {k: round(v, 1) for k, (v, _) in parts.items()},
+            "detail": {"evenness": ev, "flow": fl,
+                       "pitch": p, "dropout": rep["dropout"],
+                       "clicks": rep["discontinuity"], "level": rep["headroom"]}}
+
+
+def grade(total):
+    """Letter grade for a score, for quick reading."""
+    for cut, g in ((90, "A"), (80, "B"), (70, "C"), (60, "D")):
+        if total >= cut:
+            return g
+    return "F"
+
+
 def summarize(x, sr, timeline=None):
     """Full metric set as one dict (``timeline`` enables the pitch metrics)."""
     rep = {

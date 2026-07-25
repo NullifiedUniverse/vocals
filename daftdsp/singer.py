@@ -156,7 +156,18 @@ def _steadiest(fr, a, b):
     flux = np.r_[0.0, np.mean(np.abs(np.diff(sp, axis=0)), axis=1)]
     k = min(5, max(1, (b - a) // 3))
     smooth = np.convolve(flux, np.ones(k) / k, mode="same")
-    return float(a + int(np.argmin(smooth)))
+    best = a + int(np.argmin(smooth))
+    # Only a voiced frame can be sustained -- holding an unvoiced one gives a
+    # note with no tone at all (measured: a completely silent note).  Keep the
+    # steadiest choice and simply move to the nearest voiced frame if it is not
+    # voiced; re-searching under a mask instead picks a transitional frame.
+    if fr.f0[min(best, fr.n - 1)] > 0:
+        return float(best)
+    vi = np.where(fr.f0[a:b] > 0)[0]
+    if vi.size:
+        return float(a + vi[np.argmin(np.abs(vi - (best - a)))])
+    vi = np.where(fr.f0 > 0)[0]
+    return float(vi[np.argmin(np.abs(vi - best))]) if vi.size else float(best)
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +179,23 @@ def _trajectory(fr, plans, fps):
     n_out = plans[-1].out_end
     traj = np.zeros(n_out)
     prev_end = plans[0].src_on[0]
+    voiced = fr.f0 > 0
     for p in plans:
         hold = _steadiest(fr, *p.src_vowel)
         v0, v1 = p.src_vowel
+        # Keep the whole sung part of the note inside the voiced run that
+        # contains the held frame: if a ramp runs off into unvoiced frames the
+        # note loses its tone (measured as notes that came out silent).
+        h = int(np.clip(hold, 0, fr.n - 1))
+        if voiced[h]:
+            lo = h
+            while lo > 0 and voiced[lo - 1]:
+                lo -= 1
+            hi = h
+            while hi + 1 < fr.n and voiced[hi + 1]:
+                hi += 1
+            v0 = max(v0, lo)
+            v1 = min(max(v1, v0 + 1), hi + 1)
         # consonant: play it at its natural speed, arriving at the vowel on time
         a, b = p.out_start, p.out_vowel
         if b > a:
@@ -230,14 +255,20 @@ def _melody(plans, fps, seed):
 # amplitude: what a singer's breath support actually produces
 # ---------------------------------------------------------------------------
 
-def _amplitude(y, sr, plans, fps, phrase_arch=True):
+def _amplitude(y, sr, plans, fps, target=None, phrase_arch=True):
     """Shape loudness in the time domain, after synthesis.
 
     Loudness has to be corrected *here*: WORLD's output level depends on the f0
     it is given as well as on the spectral envelope, so flattening the envelope
     alone does not produce a steady note (measured: a sustained note still decayed
-    from 0.18 to 0.004).  A singer holds steady breath pressure, so the sustain is
-    levelled, with a short attack and a release only at the end of the phrase.
+    from 0.18 to 0.004).
+
+    Every sung note is levelled to **one common target** rather than to its own
+    average -- this is the standard fix in singing synthesis, where the voiced
+    sections of every unit are gain-matched to a single global RMS so that no
+    syllable is louder than another.  Levelling each note to its own mean instead
+    (as this used to) preserves exactly the speech-loudness differences that make
+    a sung line sound uneven; measured note-to-note spread was 2.6x.
     """
     n = y.size
     env = np.abs(y).astype(np.float64)
@@ -257,8 +288,10 @@ def _amplitude(y, sr, plans, fps, phrase_arch=True):
         ref = float(np.median(live)) if live.size else float(seg.mean())
         if ref <= 1e-6:
             continue
-        # Level the sustain toward that note's own reference.
-        gain[a:b] = np.clip(ref / np.maximum(seg, 0.05 * ref), 0.3, 3.0)
+        # Steady breath support within the note, and the same level as every
+        # other note (the global target), not merely self-consistent.
+        aim = target if target else ref
+        gain[a:b] = np.clip(aim / np.maximum(seg, 0.05 * ref), 0.25, 4.0)
         if phrase_arch:                        # phrases arch; high notes carry
             pn = (p.midi - lo) / (hi - lo) if hi > lo else 0.5
             arc = np.sin(np.pi * (j + 0.5) / len(plans))
@@ -290,10 +323,12 @@ def _amplitude(y, sr, plans, fps, phrase_arch=True):
 # phrase / song
 # ---------------------------------------------------------------------------
 
-def _render_phrase(phrase, sr, voice_name, beat, formant_shift, breath, seed):
+def _render_phrase(phrase, sr, voice_name, beat, formant_shift, breath, seed,
+                   target=None):
     text = " ".join(word for word, _ in phrase)
     notes = [nt for _, wnotes in phrase for nt in wnotes]
-    utt = voice.speak(text, name=voice_name)
+    # Close the between-word pauses: a sung phrase is one connected line.
+    utt = voice.speak(text, name=voice_name).legato()
     fr = world.analyze(utt.audio, utt.sr)
     fps = 1000.0 / fr.frame_period
 
@@ -309,7 +344,7 @@ def _render_phrase(phrase, sr, voice_name, beat, formant_shift, breath, seed):
     sung = world.breathiness(sung, breath)
 
     y = world.synthesize(sung).astype(np.float64)
-    y = _amplitude(y, utt.sr, plans, fps)
+    y = _amplitude(y, utt.sr, plans, fps, target=target)
     if utt.sr != sr:
         y = util.resample(y.astype(np.float32), utt.sr, sr)
     # The consonant of the first note starts before its beat.
@@ -354,13 +389,19 @@ def sing(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
         buf, lead = _render_phrase(phrase, sr, voice_name, beat, formant_shift,
                                    breath, seed + k)
         rendered.append((start, lead, buf))
-    # Phrases are matched on loudness, not peak: peak-matching makes a line with
-    # one sharp transient quiet and a smooth line loud.
+    # One loudness target for the whole song, applied to every note, so no
+    # syllable or line is louder than another.
     levels = [_loudness(b) for _, _, b in rendered]
     ref = float(np.median([lv for lv in levels if lv > 1e-6]) or 1.0)
+    rendered = [(start, lead,
+                 _render_phrase(phrase, sr, voice_name, beat, formant_shift,
+                                breath, seed + k, target=ref)[0])
+                for k, ((start, lead, _), (_, phrase))
+                in enumerate(zip(rendered, phrases))]
+    levels = [_loudness(b) for _, _, b in rendered]
     for (start, lead, buf), lv in zip(rendered, levels):
         if lv > 1e-6:
-            buf = buf * np.clip(ref / lv, 0.6, 1.7)
+            buf = buf * np.clip(ref / lv, 0.7, 1.5)
         p = max(0, int((start - lead) * sr))
         e = min(out.size, p + buf.size)
         out[p:e] += buf[:e - p]
