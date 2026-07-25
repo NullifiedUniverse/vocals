@@ -55,6 +55,8 @@ ATTACK = 0.035              # onset of a sung note
 RELEASE = 0.18              # only at the end of a phrase
 MAX_ONSET = 0.16            # a consonant cluster never eats more than this
 MAX_CODA = 0.12
+EVEN_BLEND = 0.75           # how far notes are levelled toward a common loudness
+ARCH = 0.32                 # depth of the musical dynamic arch across a phrase
 
 
 @dataclass
@@ -179,23 +181,15 @@ def _trajectory(fr, plans, fps):
     n_out = plans[-1].out_end
     traj = np.zeros(n_out)
     prev_end = plans[0].src_on[0]
-    voiced = fr.f0 > 0
     for p in plans:
+        # The vowel is exactly the vowel *phoneme*, from the aligner.  It must
+        # not be widened to the surrounding voiced run: l, n, r, m, w and the
+        # voiced stops are voiced too, so in a word like "little" that run covers
+        # the whole word, and stretching it destroys the consonants and with them
+        # the word.  Only consonants are protected from stretching; only the
+        # vowel is stretched.
         hold = _steadiest(fr, *p.src_vowel)
         v0, v1 = p.src_vowel
-        # Keep the whole sung part of the note inside the voiced run that
-        # contains the held frame: if a ramp runs off into unvoiced frames the
-        # note loses its tone (measured as notes that came out silent).
-        h = int(np.clip(hold, 0, fr.n - 1))
-        if voiced[h]:
-            lo = h
-            while lo > 0 and voiced[lo - 1]:
-                lo -= 1
-            hi = h
-            while hi + 1 < fr.n and voiced[hi + 1]:
-                hi += 1
-            v0 = max(v0, lo)
-            v1 = min(max(v1, v0 + 1), hi + 1)
         # consonant: play it at its natural speed, arriving at the vowel on time
         a, b = p.out_start, p.out_vowel
         if b > a:
@@ -290,12 +284,18 @@ def _amplitude(y, sr, plans, fps, target=None, phrase_arch=True):
             continue
         # Steady breath support within the note, and the same level as every
         # other note (the global target), not merely self-consistent.
-        aim = target if target else ref
+        # Level *most* of the way to the common target, not all of it: removing
+        # every difference between notes also removes the expression, which is
+        # what made earlier versions sound flat.  Speech stress goes; musical
+        # dynamics stay and are then shaped deliberately.
+        aim = (target ** EVEN_BLEND) * (ref ** (1.0 - EVEN_BLEND)) if target else ref
         gain[a:b] = np.clip(aim / np.maximum(seg, 0.05 * ref), 0.25, 4.0)
-        if phrase_arch:                        # phrases arch; high notes carry
+        if phrase_arch:
+            # A real phrase swells toward its high point and eases at the end,
+            # and higher notes carry more -- a much wider range than before.
             pn = (p.midi - lo) / (hi - lo) if hi > lo else 0.5
-            arc = np.sin(np.pi * (j + 0.5) / len(plans))
-            gain[a:b] *= 0.86 + 0.09 * pn + 0.09 * arc
+            arc = np.sin(np.pi * (j + 0.5) / len(plans)) ** 0.8
+            gain[a:b] *= (1.0 - ARCH) + ARCH * (0.45 * pn + 0.55 * arc) * 2.0
 
     k = max(1, int(0.04 * sr))
     gain = np.convolve(np.pad(gain, (k, k), mode="edge"),

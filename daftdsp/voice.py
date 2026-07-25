@@ -115,14 +115,15 @@ class Utterance:
             return 0, self.audio.size
         return spoken[0].start, min(spoken[-1].end, self.audio.size)
 
-    def legato(self, keep_ms: float = 12.0, fade_ms: float = 8.0) -> "Utterance":
+    def legato(self, keep_ms: float = 40.0, fade_ms: float = 10.0) -> "Utterance":
         """Close the pauses *between words* so the phrase runs on without gaps.
 
         Speech separates words with short silences; singing does not -- within a
         breath a singer runs the words together, and those pauses are exactly
         what makes a sung line sound like stretched speech.  Each internal
-        silence is cut to ``keep_ms`` and the join is cross-faded so nothing
-        clicks.
+        silence is cut back to ``keep_ms`` and the join is cross-faded.  Enough
+        of the pause is kept that word boundaries -- and so the words -- survive;
+        closing them completely runs the words together and costs intelligibility.
         """
         lo, hi = self.speech_span()
         gaps = [p for p in self.phones

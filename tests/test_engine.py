@@ -1,5 +1,9 @@
 """
-Self-contained test suite for the daftdsp engine.
+Test suite for the shared DSP core and the robot voice.
+
+Singing-voice quality lives in tests/test_singing_quality.py, which inspects the
+rendered waveform and scores it; keeping those assertions in one place stops the
+two suites drifting apart.
 
 Run with either:
     python tests/test_engine.py
@@ -194,19 +198,6 @@ def test_aria_master_chain():
     st = singer.render_song(score, SING_SR, bpm=120)
     assert st.ndim == 1 and np.all(np.isfinite(st))
     assert quality.headroom(st)["clipped"] == 0
-
-
-def test_sung_notes_match_human_behaviour():
-    """A sustained note must behave the way a human singer's note behaves."""
-    score = [("lah", [("A4", 4)])]
-    dry = singer.sing(score, SING_SR, bpm=60)
-    m = quality.sung_note(dry, SING_SR, midi=69)
-    assert abs(m["cents_off"]) < 35                  # in tune
-    assert 4.5 <= m["vibrato_hz"] <= 8.5             # human vibrato rate
-    assert 12 <= m["vibrato_cents"] <= 90            # human vibrato extent
-    assert m["pitch_drift"] < 45                     # the note holds its centre
-    assert m["decay_ratio"] > 0.55                   # it sustains, does not fade
-    assert m["amp_ripple"] < 0.35                    # steady breath support
 
 
 def test_short_notes_keep_their_vowel():
