@@ -208,10 +208,18 @@ def _trajectory(fr, plans, fps):
                 traj[c - tail:c] = np.linspace(hold, min(v1, hold + (v1 - hold)),
                                                tail)
         prev_end = v1
-    # Round the corners: a step in read-*rate* is audible as a tick.
+    # Round the corners: a step in read-*rate* is audible as a tick.  Smooth
+    # only the sustained part of each vowel -- blurring the consonants as well
+    # (which a whole-signal filter does) is what costs clarity.
     k = 5
-    traj = np.convolve(np.pad(traj, (k, k), mode="edge"),
-                       np.ones(k) / k, mode="same")[k:-k]
+    smooth = np.convolve(np.pad(traj, (k, k), mode="edge"),
+                         np.ones(k) / k, mode="same")[k:-k]
+    keep_sharp = np.ones(traj.size, dtype=bool)
+    for p in plans:
+        a = max(0, p.out_vowel) + int(0.05 * fps)
+        b = max(a, p.out_end - int(0.02 * fps))
+        keep_sharp[a:min(b, traj.size)] = False
+    traj = np.where(keep_sharp, traj, smooth)
     return np.clip(traj, 0, fr.n - 1)
 
 
@@ -220,14 +228,29 @@ def _melody(plans, fps, seed):
     n_out = plans[-1].out_end
     f0 = np.zeros(n_out)
     prev = 0.0
+    prev_end = 0
     for p in plans:
         hz = midi_to_freq(p.midi)
         a, b = max(0, p.out_start), p.out_end
         f0[a:b] = hz
         if prev > 0:
-            g = min(int(GLIDE * fps), max(1, (b - a) // 2))
-            f0[a:a + g] = prev * (hz / prev) ** np.linspace(0.0, 1.0, g)
+            # Singers do not step between notes: the pitch travels during the
+            # consonant and *arrives* as the vowel begins, so the vowel is
+            # already in tune.  Bigger leaps take a little longer, and the move
+            # follows an S-curve (ease in and out) rather than a ramp, which is
+            # what a voice actually does.
+            semis = abs(12.0 * np.log2(hz / prev))
+            dur = np.clip(GLIDE * (0.6 + 0.28 * semis), 0.04, 0.16)
+            g = int(dur * fps)
+            centre = max(0, p.out_vowel)
+            lo = max(prev_end, centre - int(g * 0.75))
+            hi = min(b, centre + int(g * 0.25))
+            if hi - lo > 1:
+                u = np.linspace(0.0, 1.0, hi - lo)
+                ease = u * u * (3.0 - 2.0 * u)        # smoothstep
+                f0[lo:hi] = prev * (hz / prev) ** ease
         prev = hz
+        prev_end = b
 
     rng = np.random.default_rng(seed)
     cents = np.zeros(n_out)
