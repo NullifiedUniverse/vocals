@@ -108,7 +108,7 @@ def _syllable_spans(utt, n_notes):
     return spans
 
 
-def _plan_notes(fr, spans, notes, beat, fps):
+def _plan_notes(fr, spans, notes, beat, fps, src_rate=1.0):
     """Lay the syllables out in time with each **vowel onset on its beat**.
 
     This is the single biggest difference between singing and stretched speech:
@@ -116,9 +116,12 @@ def _plan_notes(fr, spans, notes, beat, fps):
     just before it, so the rhythm is carried by the vowels.
     """
     beats = np.cumsum([0.0] + [b for _, b in notes]) * beat
+    # A slow delivery lengthens consonants too, but a singer's consonants stay
+    # short whatever the tempo, so they are given back their natural duration
+    # (their length in the source divided by how much it was slowed).
     onsets = []
     for (s0, v0, _, _) in spans:
-        onsets.append(min((v0 - s0) / fr.sr, MAX_ONSET))
+        onsets.append(min((v0 - s0) / fr.sr / src_rate, MAX_ONSET))
 
     plans = []
     for k, ((s0, v0, v1, s1), (note, nb)) in enumerate(zip(spans, notes)):
@@ -142,6 +145,31 @@ def _plan_notes(fr, spans, notes, beat, fps):
             out_end=int(round(vowel_end * fps)),
             midi=note_to_midi(note)))
     return plans, beats[-1]
+
+
+def _source_rate(utt, notes, beat, target=0.62, lo=1.0, hi=1.0):
+    """How slowly the voice should deliver this phrase.
+
+    **Currently pinned to 1.0, from measurement.**  The idea is sound -- a slower
+    delivery would shrink the 3-4x speech-to-song stretch that freezes vowels --
+    but it does not survive contact with a *speech* model.  Even at its slowest,
+    Piper's vowels are ~90 ms against notes of ~550 ms, so the stretch is barely
+    dented, while the consonants and pauses it lengthens make matters worse.
+    Measured on a three-song subset: rate 1.0 -> 86.2, 1.25 -> 86.0, 1.5 -> 78.3,
+    and choosing the rate from vowel length (which pins to the 3.0 ceiling)
+    dropped twinkle from 89.4 to 66.2.
+
+    The bound is left in place, and the plumbing below it honours the rate --
+    consonants are given back their natural speed -- so this becomes useful the
+    moment the source can actually supply sustained vowels (a singing model, or
+    recorded sung material).  A speech model cannot.
+    """
+    groups = utt.vowel_groups()
+    if not groups:
+        return 1.0
+    vowel = float(np.median([(b - a) / utt.sr for a, b in groups]))
+    want = float(np.median([b * beat for _, b in notes])) * target
+    return float(np.clip(want / max(vowel, 1e-3), lo, hi))
 
 
 def _steadiest(fr, a, b):
@@ -350,21 +378,22 @@ def _render_phrase(phrase, sr, voice_name, beat, formant_shift, breath, seed,
                    target=None):
     text = " ".join(word for word, _ in phrase)
     notes = [nt for _, wnotes in phrase for nt in wnotes]
-    # NOTE on the source rate.  The pipeline stretches speech by 3-4x to reach
-    # musical note lengths, which is the deepest limitation here: it is what
-    # freezes vowels and smears consonants.  Asking the voice for a slower
-    # delivery (voice.speak(length_scale=...)) shrinks that ratio and is the
-    # right idea, but it lengthens consonants and pauses too, which this
-    # planner's onset/coda budgets are not built for -- measured as a large
-    # regression (average 80.9 -> 60.2 at full compensation, 83.6 -> 88.9 on a
-    # subset even at half).  Making it pay off needs the planner reworked for
-    # slow source material, so the source is left at speech rate for now.
-    utt = voice.speak(text, name=voice_name).legato()
+    # Source rate.  Stretching speech 3-4x to reach note lengths is what freezes
+    # vowels; the fix is to ask the voice for a slower delivery so the *vowels*
+    # already last about as long as the notes.  The rate is therefore chosen from
+    # vowel durations, not from the utterance as a whole.  A slow delivery also
+    # lengthens the consonants, which singing does not do -- the planner
+    # compensates by running them back at their natural speed (`src_rate`).
+    utt = voice.speak(text, name=voice_name)
+    scale = _source_rate(utt, notes, beat)
+    if scale > 1.02:
+        utt = voice.speak(text, name=voice_name, length_scale=scale)
+    utt = utt.legato()
     fr = world.analyze(utt.audio, utt.sr)
     fps = 1000.0 / fr.frame_period
 
     spans = _syllable_spans(utt, len(notes))
-    plans, _ = _plan_notes(fr, spans, notes, beat, fps)
+    plans, _ = _plan_notes(fr, spans, notes, beat, fps, src_rate=scale)
     traj = _trajectory(fr, plans, fps)
     f0 = _melody(plans, fps, seed)
 
