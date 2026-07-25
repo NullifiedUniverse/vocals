@@ -130,6 +130,64 @@ DIGITAL_HEART = {
     ],
 }
 
+def parse_score(text):
+    """Parse the human/editable score format into a score list.
+
+    One entry per line -- a word followed by one ``NOTE:BEATS`` per syllable, or
+    a rest::
+
+        twinkle C4:1 C4:1
+        star    G4:2
+        rest    1
+
+    ``BEATS`` may be omitted (defaults to 1).  Blank lines and ``#`` comments are
+    ignored.  Raises ``ValueError`` with a line number on bad input.
+    """
+    score = []
+    for lineno, raw in enumerate(str(text).splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        head = parts[0]
+        if head.lower() == "rest":
+            try:
+                beats = float(parts[1]) if len(parts) > 1 else 1.0
+            except ValueError:
+                raise ValueError(f"line {lineno}: bad rest length {parts[1]!r}")
+            score.append(("rest", beats))
+            continue
+        if len(parts) < 2:
+            raise ValueError(f"line {lineno}: {head!r} has no notes")
+        notes = []
+        for tok in parts[1:]:
+            name, _, beats = tok.partition(":")
+            try:
+                notes.append((name, float(beats) if beats else 1.0))
+            except ValueError:
+                raise ValueError(f"line {lineno}: bad note {tok!r}")
+        score.append((head, notes))
+    if not score:
+        raise ValueError("empty score")
+    return score
+
+
+def format_score(score):
+    """Render a score back into the editable text format."""
+    out = []
+    for item in score:
+        if item[0] == "rest":
+            out.append(f"rest {_num(item[1])}")
+        else:
+            notes = " ".join(f"{n}:{_num(b)}" for n, b in item[1])
+            out.append(f"{item[0]} {notes}")
+    return "\n".join(out)
+
+
+def _num(v):
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
 def note_timeline(score, bpm):
     """Expand a score into ``[(start_s, dur_s, midi), ...]`` (rests skipped).
 
