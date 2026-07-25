@@ -76,6 +76,10 @@ def ensure_model(name: str = DEFAULT_VOICE, download: bool = True) -> Path | Non
         return None
 
 
+# Symbols that carry no speech: sentence markers, word gaps, punctuation.
+SILENCE = {"^", "$", "_", " ", ",", ".", "!", "?", ";", ":", "|"}
+
+
 @dataclass
 class Phone:
     """One phoneme with its span in samples."""
@@ -87,6 +91,10 @@ class Phone:
     def is_vowel(self) -> bool:
         return any(c in VOWELS for c in self.symbol)
 
+    @property
+    def is_silence(self) -> bool:
+        return self.symbol in SILENCE or not self.symbol.strip()
+
 
 @dataclass
 class Utterance:
@@ -94,6 +102,18 @@ class Utterance:
     audio: np.ndarray          # float32 mono
     sr: int
     phones: list[Phone]
+
+    def speech_span(self) -> tuple[int, int]:
+        """Sample range that actually contains speech.
+
+        Piper brackets an utterance with silence markers; treating that silence
+        as part of a syllable makes a note fade away into nothing, so every span
+        is clamped to this range.
+        """
+        spoken = [p for p in self.phones if not p.is_silence]
+        if not spoken:
+            return 0, self.audio.size
+        return spoken[0].start, min(spoken[-1].end, self.audio.size)
 
     def vowel_groups(self) -> list[tuple[int, int]]:
         """Contiguous vowel runs (diphthongs stay one group) as sample spans."""

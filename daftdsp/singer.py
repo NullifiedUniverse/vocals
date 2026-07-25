@@ -42,14 +42,19 @@ DEFAULT_SR = 22050
 
 def _syllables(utt, n_notes):
     """Return ``n_notes`` syllable spans ``(start, vowel_start, vowel_end, end)``
-    in samples, derived from the phoneme alignment."""
+    in samples, derived from the phoneme alignment.
+
+    Spans are clamped to the utterance's speech region: the surrounding silence
+    is not part of any syllable, and letting a note read it makes the note fade
+    away to nothing.
+    """
     groups = utt.vowel_groups()
-    total = utt.audio.size
+    lo, hi = utt.speech_span()
 
     if not groups:                                   # no vowels detected at all
-        step = total / max(1, n_notes)
-        return [(int(k * step), int(k * step), int((k + 1) * step),
-                 int((k + 1) * step)) for k in range(n_notes)]
+        step = (hi - lo) / max(1, n_notes)
+        return [(int(lo + k * step), int(lo + k * step), int(lo + (k + 1) * step),
+                 int(lo + (k + 1) * step)) for k in range(n_notes)]
 
     if len(groups) > n_notes:
         # Keep the longest nuclei (unstressed schwas get absorbed).
@@ -64,9 +69,11 @@ def _syllables(utt, n_notes):
 
     spans = []
     for k, (v0, v1) in enumerate(groups):
-        start = 0 if k == 0 else (groups[k - 1][1] + v0) // 2
-        end = total if k == len(groups) - 1 else (v1 + groups[k + 1][0]) // 2
-        spans.append((start, max(start, v0), max(v0 + 1, v1), max(v1, end)))
+        start = lo if k == 0 else (groups[k - 1][1] + v0) // 2
+        end = hi if k == len(groups) - 1 else (v1 + groups[k + 1][0]) // 2
+        v0 = min(max(v0, lo), hi)
+        v1 = min(max(v1, v0 + 1), hi)
+        spans.append((min(start, v0), v0, v1, max(v1, min(end, hi))))
     return spans
 
 
@@ -89,11 +96,11 @@ def _build_trajectory(fr, spans, notes, beat, sr, glide_ms, vib_depth,
         f_v1, f_s1 = fr.samples_to_frame(v1), fr.samples_to_frame(s1)
 
         # Consonants keep their natural length -- racing through a cluster like
-        # "str" makes it chirp -- and are compressed only when the note is too
-        # short to hold both them and a singable vowel.
-        on = int(max(0.0, f_v0 - f_s0))
-        co = int(max(0.0, f_s1 - f_v1))
-        budget = int(0.55 * n_out)
+        # "str" makes it chirp -- but are capped so a long tail can never take
+        # over the note, and compressed further if the note is short.
+        on = int(min(max(0.0, f_v0 - f_s0), 0.20 * fps))
+        co = int(min(max(0.0, f_s1 - f_v1), 0.18 * fps))
+        budget = int(0.5 * n_out)
         if on + co > budget and on + co > 0:
             f = budget / (on + co)
             on, co = int(on * f), int(co * f)
@@ -109,10 +116,16 @@ def _build_trajectory(fr, spans, notes, beat, sr, glide_ms, vib_depth,
             seg[:on] = np.linspace(f_s0, vow_a, on)
         # Across the vowel, move quickly through the on-glide, dwell on the
         # steady middle, then resolve the off-glide -- monotone, so it never
-        # jumps, and slow in the centre, so the note is a held vowel.
+        # jumps, and slow in the centre, so the note is a held vowel.  A slow
+        # wander is added on top: a perfectly frozen frame sounds synthetic
+        # ("tinny"), whereas a real held vowel keeps drifting slightly.
         u = np.linspace(0.0, 1.0, hold)
         ease = u + 0.85 * np.sin(2.0 * np.pi * u) / (2.0 * np.pi)
-        seg[on:on + hold] = vow_a + (vow_b - vow_a) * ease
+        path = vow_a + (vow_b - vow_a) * ease
+        if hold > 4:
+            wander = 0.06 * (vow_b - vow_a) * np.sin(2.0 * np.pi * 1.7 * u * hold / fps)
+            path = path + wander * np.clip(np.sin(np.pi * u) * 2.0, 0.0, 1.0)
+        seg[on:on + hold] = path
         if co:
             seg[on + hold:] = np.linspace(vow_b, f_s1, n_out - on - hold)
         traj.append(seg)
@@ -152,26 +165,46 @@ def _build_trajectory(fr, spans, notes, beat, sr, glide_ms, vib_depth,
     return traj, f0 * 2.0 ** (cents / 1200.0), slots
 
 
-def _sung_dynamics(fr, slots, evenness=0.7):
-    """Speech stresses words; singing gives every syllable full voice.
+def _sung_dynamics(fr, slots, evenness=0.8, sustain=0.85):
+    """Turn speech dynamics into *sung* dynamics.
 
-    Levels each note toward the phrase median (in the spectral envelope, before
-    synthesis) and then applies a musical arc.
+    Two things differ between speaking and singing, and both are fixed here:
+
+    * **Across notes** -- speech stresses some syllables and throws others away,
+      so unstressed ones drop out of the melody.  A singer gives every syllable
+      full voice, so each note is levelled toward the phrase median.
+    * **Within a note** -- a spoken vowel decays as the speaker moves on, and
+      because WORLD's spectral envelope carries loudness, holding that vowel
+      holds its decay too and the note fades out.  A singer sustains at constant
+      volume, so the voiced part of each note is levelled against its own median.
+
+    A musical arc (a little louder toward higher notes and the middle of the
+    phrase) is then applied on top, so the result is shaped, not flat.
     """
     power = np.sqrt(fr.sp.sum(axis=1) + 1e-12)
-    levels = [float(np.mean(power[a:b])) or 1e-6 for a, b, _ in slots]
+    voiced = fr.f0 > 0
+    levels = [float(np.median(power[a:b][voiced[a:b]]) if voiced[a:b].any()
+                    else np.mean(power[a:b])) or 1e-6 for a, b, _ in slots]
     ref = float(np.median([lv for lv in levels if lv > 1e-6]) or 1.0)
     mids = [m for _, _, m in slots]
     lo, hi = min(mids), max(mids)
 
     gain = np.ones(fr.n)
     for j, (a, b, m) in enumerate(slots):
-        even = np.clip((ref / levels[j]) ** evenness, 0.5, 2.2)
+        note_ref = levels[j]
+        # Hold the sustained vowel at a steady level (voiced frames only --
+        # consonants are meant to be quieter and noisier).
+        seg = np.ones(b - a)
+        v = voiced[a:b]
+        if v.any():
+            seg[v] = np.clip((note_ref / power[a:b][v]) ** sustain, 0.35, 2.8)
+        even = np.clip((ref / note_ref) ** evenness, 0.5, 2.2)
         pn = (m - lo) / (hi - lo) if hi > lo else 0.5
         arc = np.sin(np.pi * (j + 0.5) / len(slots))
-        gain[a:b] = even * (0.86 + 0.08 * pn + 0.08 * arc)
-    k = max(1, int(0.05 * 1000.0 / fr.frame_period))
-    gain = np.convolve(gain, np.ones(k) / k, mode="same")
+        gain[a:b] = seg * even * (0.86 + 0.08 * pn + 0.08 * arc)
+    k = max(1, int(0.03 * 1000.0 / fr.frame_period))
+    gain = np.convolve(np.pad(gain, (k, k), mode="edge"),
+                       np.ones(k) / k, mode="same")[k:-k]
     # Envelope is a power spectrum, so amplitude gain g -> g**2 on sp.
     return world.Frames(fr.f0, fr.sp * (gain ** 2)[:, None], fr.ap, fr.sr,
                         fr.frame_period)
@@ -236,11 +269,19 @@ def sing(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
     beat = 60.0 / bpm
     phrases, total = _phrases(score, beat)
     out = np.zeros(int(total * sr) + sr, dtype=np.float32)
+    # Phrases are levelled to a common *loudness*.  Peak-normalising each phrase
+    # instead (as this used to) makes a line with one sharp transient quiet and a
+    # smooth line loud, which is heard as the volume jumping between lines.
+    bufs = []
     for k, (start, phrase) in enumerate(phrases):
         buf = _render_phrase(phrase, sr, voice_name, beat, glide_ms, vib_depth,
                              vib_rate, formant_shift, breath, seed + k)
-        # Each phrase is levelled on its own so one loud line can't bury another.
-        buf = util.normalize_peak(buf, 0.9)
+        bufs.append((start, buf))
+    levels = [_loudness(b) for _, b in bufs]
+    ref = float(np.median([lv for lv in levels if lv > 1e-6]) or 1.0)
+    for (start, buf), lv in zip(bufs, levels):
+        if lv > 1e-6:
+            buf = buf * np.clip(ref / lv, 0.6, 1.7)
         p = int(start * sr)
         e = min(out.size, p + buf.size)
         out[p:e] += buf[:e - p]
@@ -248,16 +289,31 @@ def sing(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
     return util.normalize_peak(out, 0.9)
 
 
+def _loudness(x):
+    """RMS of the audible part -- silence must not drag the measurement down."""
+    a = np.abs(x)
+    live = x[a > 0.05 * (float(a.max()) or 1.0)]
+    return float(np.sqrt(np.mean(live ** 2))) if live.size else 0.0
+
+
 # ---------------------------------------------------------------------------
 # mastering
 # ---------------------------------------------------------------------------
 
 def _voice_timbre(x, sr):
-    """A light touch only -- the neural voice already has a natural spectrum."""
-    return biquad_fft([highpass(85.0, sr, 0.7),
-                       low_shelf(300.0, sr, 1.5),
-                       peaking(3000.0, sr, 1.2, 1.5),
-                       high_shelf(9000.0, sr, 1.5)], x)
+    """Put back the chest/body that singing above the speaking range loses.
+
+    The notes sit well above the voice's natural speaking pitch, which shifts
+    energy up the spectrum and reads as thin or "tinny".  A low shelf restores
+    the body, a gentle dip tames the 4 kHz edge, and only a little air is added
+    on top -- the neural voice already has a natural spectrum, so this stays
+    light.
+    """
+    return biquad_fft([highpass(80.0, sr, 0.7),
+                       low_shelf(350.0, sr, 3.5),      # body / chest
+                       peaking(900.0, sr, 1.0, 1.0),   # warmth in the low mids
+                       peaking(4000.0, sr, 1.6, -2.0),  # take off the edge
+                       high_shelf(9000.0, sr, 1.0)], x)
 
 
 def _deess(x, sr, amount=0.5):

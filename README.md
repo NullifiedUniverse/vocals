@@ -133,7 +133,7 @@ The package `daftdsp/` is one module per DSP stage:
 | `voice.py`    | Neural speech front-end (**Piper**) with phoneme alignments, model download/caching, and an espeak fallback |
 | `world.py`    | **WORLD** vocoder front-end: analysis, frame time-warp, formant shift, breathiness, resynthesis |
 | `singer.py`   | **Aria** singer: whole-phrase neural speech → phoneme-exact alignment → continuous vowel warp → melody re-pitch → WORLD resynthesis → sung dynamics → master |
-| `harmonic.py` | From-scratch harmonic+noise resynthesis (kept as a reference implementation of the same idea) |
+
 | `songs.py`    | Word-based scores (`SONGS`), the editable text score format (`parse_score`/`format_score`) and score helpers |
 | `quality.py`  | Objective quality metrics (clicks, cents error, sustain, dropout, headroom, spectrum) used by tests, the report tool and the web app |
 

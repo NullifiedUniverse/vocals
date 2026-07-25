@@ -2,12 +2,13 @@
 Songs for the Aria singer (daftdsp/singer.py), as word-based scores.
 
 Each item is ``("rest", beats)`` or ``(word, [(note, beats), ...])`` with one
-note per syllable of the word.  espeak pronounces whole words, so these are plain
-spellings.  Melodies are public domain (folk / classical) or original.
+note per syllable of the word.  Words are written normally -- the neural voice
+pronounces them -- and each song only needs a tempo.  Melodies are public domain
+(folk / classical) or original.
 """
 
 SCALE = {
-    "bpm": 120, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 120,
     "score": [
         ("doe", [("C4", 1)]), ("ray", [("D4", 1)]), ("me", [("E4", 1)]),
         ("fah", [("F4", 1)]), ("soul", [("G4", 1)]), ("la", [("A4", 1)]),
@@ -19,7 +20,7 @@ SCALE = {
 }
 
 TWINKLE = {
-    "bpm": 108, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 108,
     "score": [
         ("twinkle", [("C4", 1), ("C4", 1)]), ("twinkle", [("G4", 1), ("G4", 1)]),
         ("little", [("A4", 1), ("A4", 1)]), ("star", [("G4", 2)]), ("rest", 1),
@@ -36,7 +37,7 @@ TWINKLE = {
 }
 
 ODE = {
-    "bpm": 118, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 118,
     "score": [
         ("lah", [("E4", 1)]), ("lah", [("E4", 1)]), ("lah", [("F4", 1)]),
         ("lah", [("G4", 1)]), ("lah", [("G4", 1)]), ("lah", [("F4", 1)]),
@@ -52,7 +53,7 @@ ODE = {
 }
 
 MARY = {
-    "bpm": 112, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 112,
     "score": [
         ("Mary", [("E4", 1), ("D4", 1)]), ("had", [("C4", 1)]), ("a", [("D4", 1)]),
         ("little", [("E4", 1), ("E4", 1)]), ("lamb", [("E4", 2)]), ("rest", 1),
@@ -67,7 +68,7 @@ MARY = {
 }
 
 ROW = {
-    "bpm": 100, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 100,
     "score": [
         ("row", [("C4", 1)]), ("row", [("C4", 1)]), ("row", [("C4", 1)]),
         ("your", [("D4", 1)]), ("boat", [("E4", 2)]), ("rest", 1),
@@ -83,7 +84,7 @@ ROW = {
 }
 
 JINGLE = {
-    "bpm": 120, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 120,
     "score": [
         ("jingle", [("E4", 1), ("E4", 1)]), ("bells", [("E4", 2)]),
         ("jingle", [("E4", 1), ("E4", 1)]), ("bells", [("E4", 2)]),
@@ -99,7 +100,7 @@ JINGLE = {
 
 # Original ballad -- emotive, sustained.
 STARLIGHT = {
-    "bpm": 82, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 82,
     "score": [
         ("when", [("E4", 1)]), ("the", [("G4", 1)]), ("stars", [("A4", 2)]),
         ("come", [("G4", 1)]), ("out", [("E4", 2)]), ("rest", 1),
@@ -113,7 +114,7 @@ STARLIGHT = {
 }
 
 DIGITAL_HEART = {
-    "bpm": 96, "voice": "en+f4", "base_pitch": 64,
+    "bpm": 96,
     "score": [
         ("I", [("C4", 1)]), ("am", [("E4", 1)]), ("a", [("G4", 1)]),
         ("voice", [("G4", 1)]), ("of", [("A4", 1)]), ("light", [("G4", 2)]),
