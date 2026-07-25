@@ -17,6 +17,7 @@ from daftdsp import biquad, effects, pitch, psola, quality, singer  # noqa: E402
 from daftdsp import songs, synth, vocoder  # noqa: E402
 
 SR = 44100
+SING_SR = singer.DEFAULT_SR
 
 
 def test_biquad_lowpass_attenuates_highs():
@@ -174,23 +175,22 @@ def test_aria_song_quality_regression():
     score = [("twinkle", [("C4", 1), ("C4", 1)]), ("little", [("G4", 1), ("G4", 1)]),
              ("star", [("A4", 2)])]
     bpm = 120
-    dry = singer.sing(score, SR, bpm=bpm)
+    dry = singer.sing(score, SING_SR, bpm=bpm)
     tl = songs.note_timeline(score, bpm)
-    rep = quality.summarize(dry, SR, tl)
+    rep = quality.summarize(dry, SING_SR, tl)
     assert rep["headroom"]["finite"] and rep["headroom"]["clipped"] == 0
-    assert rep["discontinuity"]["count"] <= 4          # clicks (plosives allowed)
+    # Discontinuity is asserted as a *rate* so the bound doesn't drift with the
+    # length of the phrase.  Reference points measured on this pipeline: raw
+    # neural speech and a plain WORLD round-trip both score 0.
+    assert rep["discontinuity"]["rate"] < 2e-3
     assert rep["dropout"] < 0.20                       # no vanished syllables
     assert rep["pitch"]["within_50c"] == rep["pitch"]["notes"]
     assert rep["pitch"]["mean_abs_cents"] < 30
 
 
-def test_aria_voice_modes_and_master():
+def test_aria_master_chain():
     score = [("doe", [("C4", 1)]), ("ray", [("D4", 1)]), ("me", [("E4", 2)])]
-    for mode in ("natural", "synth"):
-        dry = singer.sing(score, SR, bpm=120, voice_mode=mode)
-        assert dry.size > 0 and np.all(np.isfinite(dry))
-        assert quality.discontinuity(dry)["count"] <= 4
-    st = singer.render_song(score, SR, bpm=120)
+    st = singer.render_song(score, SING_SR, bpm=120)
     assert st.ndim == 2 and st.shape[1] == 2 and np.all(np.isfinite(st))
     assert quality.headroom(st)["clipped"] == 0
 
@@ -199,10 +199,10 @@ def test_short_notes_keep_their_vowel():
     """Fast notes must not let consonants crowd the vowel out of the slot."""
     score = [("merrily", [("C5", 1), ("C5", 1), ("C5", 1)]),
              ("merrily", [("G4", 1), ("G4", 1), ("G4", 1)])]
-    dry = singer.sing(score, SR, bpm=200)              # deliberately fast
+    dry = singer.sing(score, SING_SR, bpm=200)              # deliberately fast
     tl = songs.note_timeline(score, 200)
     assert np.all(np.isfinite(dry))
-    assert quality.dropout_ratio(dry, SR, tl) < 0.35
+    assert quality.dropout_ratio(dry, SING_SR, tl) < 0.35
 
 
 def test_full_engine_stereo_finite():

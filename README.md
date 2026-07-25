@@ -5,14 +5,16 @@ Two vocal synthesisers sharing one hand-written DSP core, in one web app:
 - 🤖 **Robot** — turn text into **Daft-Punk-style robot vocals**: espeak speech,
   auto-tuned, vocoded through a polyphonic synth, then talkbox + saturation +
   phaser + sidechain + stereo, with a wall of sliders.
-- 🎤 **Aria** — turn **words + a melody into singing**: espeak speaks the phrase,
-  and it is warped onto the tune with whole-phrase TD-PSOLA (vowels stretched to
-  their notes, legato glides, vibrato).
+- 🎤 **Aria** — turn **words + a melody into singing**: a neural voice speaks the
+  phrase, and it is warped onto the tune (vowels stretched to their notes, legato
+  glides, vibrato) by a WORLD-vocoder re-pitch.
 
-Every filter, pitch tracker and synthesis stage is **implemented from scratch**
-with plain NumPy array math — **no scipy, no librosa, no high-level DSP or
-vocal-processing libraries** for any of the core algorithms. See
-[DESIGN.md](DESIGN.md) for the architecture and pipeline.
+The **robot voice and the shared DSP core are written entirely from scratch** in
+plain NumPy — no scipy, no librosa, no DSP libraries; `numpy.fft` is used only as
+a math primitive. The **singing voice** additionally uses a neural TTS (Piper)
+and the WORLD vocoder, because the *source* voice — not the processing — was what
+limited how lifelike it could sound. See [DESIGN.md](DESIGN.md) for the
+architecture, the pipeline and that diagnosis.
 
 ```
  ROBOT   text ─► [espeak] ─► [PSOLA auto-tune] ─┐
@@ -22,8 +24,9 @@ vocal-processing libraries** for any of the core algorithms. See
                                                 ▼
          output ◄─ [stereo/EQ] ◄─ [sidechain] ◄─ [phaser] ◄─ [tanh saturation]
 
- ARIA    words+notes ─► [espeak phrase] ─► [align syllables to notes]
-                     ─► [warp vowels + melody] ─► [TD-PSOLA] ─► [dynamics] ─► [master]
+ ARIA    words+notes ─► [Piper neural speech + phoneme alignments]
+                     ─► [align vowels to notes] ─► [warp time] ─► [replace f0]
+                     ─► [WORLD resynthesis] ─► [sung dynamics] ─► [master]
 ```
 
 ## Quick start
@@ -53,29 +56,27 @@ python examples/render_demo.py "harder better" --all        # render every prese
 
 ### Make it sing — the Aria voice
 
-`daftdsp/singer.py` turns a word-based score into a sung vocal, **a phrase at a
-time** so pronunciation and flow come from real, continuous speech:
+`daftdsp/singer.py` turns a word-based score into singing. It is built on a
+**neural voice** rather than a rule-based one, because that was the real ceiling:
+espeak is a formant synthesiser and sounds buzzy by construction, no matter what
+DSP follows it.
 
-1. **espeak speaks the whole phrase** as one natural utterance — correct
-   pronunciation, and natural coarticulation between words.
-2. Its **vowel nuclei** are detected (one per sung syllable) and aligned to the
-   notes; syllable bounds fall at the energy minima between them.
-3. One continuous **time-warp** stretches each vowel to fill its note while
-   consonants stay at natural speed (compressed proportionally if a note is too
-   short, so a fast note never loses its vowel).
-4. One continuous **TD-PSOLA** pass re-pitches and re-times espeak's *actual
-   waveform* onto the melody, with legato glides and a vibrato that swells in.
-5. **Sung dynamics** level each syllable toward the phrase median — speech
-   stresses words, singing gives every syllable full voice — then re-apply a
-   musical shape. A timbre / de-ess / stereo / reverb chain finishes it.
+1. **Piper** (neural TTS trained on a real person) speaks the whole phrase — so
+   pronunciation, and the flow from word to word, are natural to begin with.
+2. Piper also reports **phoneme alignments**, so the vowels are *known*, not
+   guessed from an energy envelope. Each vowel is matched to its note.
+3. **WORLD** splits the phrase into pitch / spectral envelope / aperiodicity.
+   Replacing the pitch therefore never disturbs the vowel or the timbre.
+4. A continuous, corner-free **time-warp** holds each vowel across its note while
+   consonants keep their natural length, so words stay intelligible.
+5. **Sung dynamics** give every syllable full voice (speech stresses words;
+   singing does not), then a light EQ / de-ess / stereo / reverb finish.
 
-Real waveform in, real waveform out: the words keep espeak's exact pronunciation.
-Measured on the dry signal: **2–5 cents** mean pitch error (100% of notes within
-50 cents), **0 clicks**, and 3–6% within-note dropout (natural stop closures).
+Measured on the dry signal: pitch within a few cents of every note, no clipping,
+no vanished syllables. Rendering runs at the voice's native 22.05 kHz.
 
-A second `voice_mode="synth"` renders the voiced vowels with harmonic
-resynthesis (`harmonic.py`) instead — smoother and more synthetic, still with
-espeak's real consonants. It is the *only* stage that differs.
+If no neural model is present the package still runs, falling back to espeak at
+lower quality. The model (~63 MB) downloads on first use into `models/`.
 
 Scores are plain text (`word NOTE:beats` per line, or `rest N`), editable in the
 web app and stored in `daftdsp/songs.py`:
@@ -116,7 +117,7 @@ python tests/test_engine.py       # or:  pytest tests/
 
 The package `daftdsp/` is one module per DSP stage:
 
-| Module | What it does (all hand-written) |
+| Module | What it does |
 |---|---|
 | `util.py`     | RIFF WAV read/write (PCM + 32-bit float), cubic resampler, note/scale math |
 | `biquad.py`   | RBJ-cookbook biquad coefficients; Direct-Form-II-Transposed recursion; **exact transfer-function filtering via FFT** for speed; parallel band-bank |
@@ -129,8 +130,10 @@ The package `daftdsp/` is one module per DSP stage:
 | `tts.py`      | Text → vocal PCM via `espeak-ng`, with a from-scratch formant-babble fallback |
 | `engine.py`   | Wires the whole chain together; `EngineParams` holds every runtime control |
 | `presets.py`  | Ready-made parameter sets (Vocaloid Diva, Melancholy Android, …) |
-| `harmonic.py` | Harmonic + noise **resynthesis** (WORLD/STRAIGHT-style): cepstral spectral envelope, phase-dispersed sinusoids at the target pitch + envelope-shaped noise. Used by `voice_mode="synth"` |
-| `singer.py`   | **Aria** singer: whole-phrase espeak → syllable/note alignment → continuous vowel warp → TD-PSOLA → sung dynamics → master |
+| `voice.py`    | Neural speech front-end (**Piper**) with phoneme alignments, model download/caching, and an espeak fallback |
+| `world.py`    | **WORLD** vocoder front-end: analysis, frame time-warp, formant shift, breathiness, resynthesis |
+| `singer.py`   | **Aria** singer: whole-phrase neural speech → phoneme-exact alignment → continuous vowel warp → melody re-pitch → WORLD resynthesis → sung dynamics → master |
+| `harmonic.py` | From-scratch harmonic+noise resynthesis (kept as a reference implementation of the same idea) |
 | `songs.py`    | Word-based scores (`SONGS`), the editable text score format (`parse_score`/`format_score`) and score helpers |
 | `quality.py`  | Objective quality metrics (clicks, cents error, sustain, dropout, headroom, spectrum) used by tests, the report tool and the web app |
 

@@ -6,3 +6,6 @@ renders/
 .venv/
 venv/
 .DS_Store
+models/
+*.onnx
+*.onnx.json

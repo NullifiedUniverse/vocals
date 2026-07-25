@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from daftdsp import EngineParams, process, quality, singer, util  # noqa: E402
+from daftdsp import EngineParams, process, quality, singer, util, voice  # noqa: E402
 from daftdsp.formant import VOWELS  # noqa: E402
 from daftdsp.presets import PRESETS  # noqa: E402
 from daftdsp.songs import (SONGS, format_score, note_timeline,  # noqa: E402
@@ -104,22 +104,17 @@ def synthesize_wav():
 # Singing voice (Aria)
 # ---------------------------------------------------------------------------
 
-SING_VOICES = ["en+f4", "en+f3", "en+f2", "en+m3", "en+m2", "en"]
-
-
 @app.get("/api/sing/meta")
 def sing_meta():
     # A list (not a dict) so the curated song order survives JSON serialisation.
     return jsonify({
         "songs": [{"name": name, "score": format_score(s["score"]),
-                   "bpm": s["bpm"], "voice": s["voice"],
-                   "base_pitch": s["base_pitch"]}
-                  for name, s in SONGS.items()],
-        "voices": SING_VOICES,
-        "voice_modes": ["natural", "synth"],
-        "defaults": {"bpm": 108, "voice": "en+f4", "base_pitch": 64,
-                     "voice_mode": "natural", "formant_shift": 1.0,
-                     "reverb_mix": 0.18, "width": 1.2},
+                   "bpm": s["bpm"]} for name, s in SONGS.items()],
+        "neural": voice.available(),
+        "voice_model": voice.DEFAULT_VOICE,
+        "defaults": {"bpm": 108, "formant_shift": 1.0, "breath": 0.0,
+                     "vib_depth": 22.0, "vib_rate": 5.5, "glide_ms": 45.0,
+                     "reverb_mix": 0.16, "width": 1.15},
     })
 
 
@@ -127,22 +122,21 @@ def _sing_render(payload):
     """Shared render path for both singing endpoints."""
     p = payload or {}
     score = parse_score(p.get("score", ""))
-    sr = 44100
+    sr = singer.DEFAULT_SR
     bpm = float(p.get("bpm", 108))
     kw = dict(
-        voice=str(p.get("voice", "en+f4")),
-        base_pitch=int(float(p.get("base_pitch", 64))),
-        voice_mode=("synth" if p.get("voice_mode") == "synth" else "natural"),
         formant_shift=float(p.get("formant_shift", 1.0)),
+        breath=float(p.get("breath", 0.0)),
+        vib_depth=float(p.get("vib_depth", 22.0)),
+        vib_rate=float(p.get("vib_rate", 5.5)),
+        glide_ms=float(p.get("glide_ms", 45.0)),
     )
     t0 = time.time()
     stereo = singer.render_song(score, sr=sr, bpm=bpm,
-                                reverb_mix=float(p.get("reverb_mix", 0.18)),
-                                width=float(p.get("width", 1.2)), **kw)
+                                reverb_mix=float(p.get("reverb_mix", 0.16)),
+                                width=float(p.get("width", 1.15)), **kw)
     # Quality is reported from the dry signal (reverb smears pitch tracking).
-    dry = singer.sing(score, sr, bpm, kw["voice"], kw["base_pitch"],
-                      voice_mode=kw["voice_mode"],
-                      formant_shift=kw["formant_shift"])
+    dry = singer.sing(score, sr, bpm, **kw)
     rep = quality.summarize(dry, sr, note_timeline(score, bpm))
     meta = {
         "render_ms": int((time.time() - t0) * 1000),

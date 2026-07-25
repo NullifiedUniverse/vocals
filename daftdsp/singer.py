@@ -1,367 +1,284 @@
 """
-Aria -- a from-scratch singing voice.
+Aria -- the singing voice.
 
-This revision is built entirely around **keeping espeak's real, correctly
-pronounced, coarticulated speech** and only re-timing and re-pitching it onto the
-melody -- nothing is resynthesised, so pronunciation and flow are whatever espeak
-already produces (which is good), just sung.
+Pipeline (see DESIGN.md).  Rendered one **phrase** at a time (the words between
+rests), so pronunciation and word-to-word flow come from one continuous, natural
+utterance:
 
-Per phrase (the words between rests):
-
-  1. espeak the whole phrase as ONE natural utterance.
-  2. Detect its vowel nuclei (one per sung syllable) and the syllable boundaries.
-  3. Build a continuous time-warp that stretches each syllable's VOWEL to fill its
-     note while keeping the consonants at natural speed, and a pitch track that
-     follows the melody with legato glides.
-  4. Apply one continuous **TD-PSOLA** pass: real espeak grains (Hann, pitch-
-     synchronous) are overlap-added at the melody's period for voiced vowels and
-     copied at natural speed for unvoiced consonants.  Real waveform in, real
-     waveform out -> intelligible words that flow into one another, click-free.
+  1. **Speak**      Piper (neural TTS) says the whole phrase, and reports the
+                    exact sample span of every phoneme.
+  2. **Align**      vowel phonemes are the syllable nuclei -- read from the
+                    alignment, not guessed from energy -- and are matched to the
+                    score's notes.
+  3. **Analyse**    WORLD splits the phrase into f0 / spectral envelope /
+                    aperiodicity.
+  4. **Warp**       a frame trajectory holds each vowel across its note while
+                    consonants run at natural speed, so words stay intelligible
+                    and the rhythm is the score's.
+  5. **Re-pitch**   f0 is replaced by the melody (legato glides, vibrato that
+                    swells in, light drift); the envelope is untouched, so the
+                    vowel and the timbre survive exactly.
+  6. **Synthesise** WORLD resynthesis -- no grains, no splices, no clicks.
+  7. **Shape**      sung dynamics (every syllable gets full voice) + phrase arc.
+  8. **Master**     gentle EQ, de-ess, stereo, reverb.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from . import effects, harmonic, pitch, tts, util
+from . import effects, util, voice, world
 from .biquad import (biquad_fft, high_shelf, highpass, low_shelf,
                      one_pole_lp_fft, peaking)
 from .util import midi_to_freq, note_to_midi
 
-
-def _hann(n):
-    n = max(2, int(n))
-    return 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / n)
-
-
-# ---------------------------------------------------------------------------
-# analysis: epochs, vowel nuclei, syllable spans
-# ---------------------------------------------------------------------------
-
-def _epochs(sr, f0s, voiced, n):
-    """Pitch marks at local-period spacing across the signal."""
-    out = []
-    i = 0.0
-    while i < n - 1:
-        ii = int(i)
-        p = (sr / f0s[ii]) if (voiced[ii] and f0s[ii] > 0) else sr / 150.0
-        p = float(np.clip(p, 40.0, 900.0))
-        out.append(ii)
-        i += p
-    if len(out) < 2:
-        out = [0, max(1, n - 1)]
-    return np.array(out, dtype=np.int64)
-
-
-def _nuclei(x, sr, voiced, nsyl):
-    """Return ``nsyl`` vowel-nucleus positions (sorted) in ``x``."""
-    e = one_pole_lp_fft(np.abs(x) * voiced.astype(np.float64), sr, 20.0)
-    emax = float(e.max()) or 1.0
-    vi = np.where(voiced)[0]
-    if vi.size < 2:
-        return np.linspace(0, x.size - 1, nsyl).astype(np.int64), e
-    span = vi[-1] - vi[0]
-    mind = max(int(0.05 * sr), int(0.45 * span / max(1, nsyl)))
-    peaks = []
-    for i in range(1, e.size - 1):
-        if e[i] > e[i - 1] and e[i] >= e[i + 1] and e[i] > 0.12 * emax:
-            if not peaks or i - peaks[-1] >= mind:
-                peaks.append(i)
-            elif e[i] > e[peaks[-1]]:
-                peaks[-1] = i
-    if len(peaks) >= nsyl:
-        peaks = sorted(sorted(peaks, key=lambda p: -e[p])[:nsyl])
-    else:                                           # fall back to even spacing
-        peaks = [int(vi[0] + span * (k + 0.5) / nsyl) for k in range(nsyl)]
-    return np.array(peaks, dtype=np.int64), e
-
-
-def _vowel_around(e, voiced, nuc, lo, hi):
-    """Contiguous voiced high-energy span around a nucleus, within [lo, hi)."""
-    thr = 0.5 * e[nuc]
-    a = nuc
-    while a > lo and voiced[a - 1] and e[a - 1] > thr:
-        a -= 1
-    b = nuc
-    while b + 1 < hi and voiced[b + 1] and e[b + 1] > thr:
-        b += 1
-    return a, b + 1
+# The neural voice is natively 22.05 kHz and has no content above ~11 kHz, so
+# rendering at its own rate avoids a pointless resample of every phrase.
+DEFAULT_SR = 22050
 
 
 # ---------------------------------------------------------------------------
-# warp construction
+# alignment: phonemes -> syllables -> notes
 # ---------------------------------------------------------------------------
 
-def _build_warp(x, sr, f0s, voiced, e, nuclei, notes, beat, glide_ms):
-    """Continuous input-time trajectory + target pitch for a phrase."""
-    n = x.size
-    nsyl = len(nuclei)
-    bounds = [0]
-    for k in range(nsyl - 1):
-        a, b = int(nuclei[k]), int(nuclei[k + 1])
-        bounds.append(a + int(np.argmin(e[a:b])) if b > a else a)
-    bounds.append(n)
+def _syllables(utt, n_notes):
+    """Return ``n_notes`` syllable spans ``(start, vowel_start, vowel_end, end)``
+    in samples, derived from the phoneme alignment."""
+    groups = utt.vowel_groups()
+    total = utt.audio.size
 
-    ins_parts, f0_parts, slots = [], [], []
-    pf = 0.0
-    opos = 0
-    for k in range(nsyl):
-        s0, s1 = bounds[k], bounds[k + 1]
-        v0, v1 = _vowel_around(e, voiced, int(nuclei[k]), s0, s1)
-        note, beats = notes[k]
-        slot = max(int(beats * beat * sr), int(0.11 * sr))
-        onset = min(max(0, v0 - s0), int(0.13 * sr))
-        coda = min(max(0, s1 - v1), int(0.12 * sr))
-        # Guard: on a short note the consonants must not crowd out the vowel --
-        # compress them proportionally so the vowel always keeps most of the slot.
-        budget = int(0.55 * slot)
-        if onset + coda > budget and onset + coda > 0:
-            f = budget / (onset + coda)
-            onset, coda = int(onset * f), int(coda * f)
-        vowel_out = max(1, slot - onset - coda)
+    if not groups:                                   # no vowels detected at all
+        step = total / max(1, n_notes)
+        return [(int(k * step), int(k * step), int((k + 1) * step),
+                 int((k + 1) * step)) for k in range(n_notes)]
 
-        ins = np.empty(slot)
-        if onset > 0:
-            ins[:onset] = np.linspace(s0, v0, onset)
-        # Stretch the vowel across the note; near the end move toward v1 so a
-        # diphthong resolves (real waveform, so it stays the correct vowel).
-        vspan = max(1, v1 - v0)
-        hold = v0 + 0.35 * vspan
-        tail = min(vowel_out // 3, int(0.16 * sr))
-        core = vowel_out - tail
-        vv = np.empty(vowel_out)
-        vv[:core] = np.linspace(v0 + 0.2 * vspan, hold, core)
-        if tail > 0:
-            vv[core:] = np.linspace(hold, v0 + 0.9 * vspan, tail)
-        ins[onset:onset + vowel_out] = np.clip(vv, v0, v1)
-        if coda > 0:
-            ins[onset + vowel_out:] = np.linspace(v1, s1, slot - onset - vowel_out)
-        ins_parts.append(ins)
+    if len(groups) > n_notes:
+        # Keep the longest nuclei (unstressed schwas get absorbed).
+        groups = sorted(sorted(groups, key=lambda g: g[0] - g[1])[:n_notes])
+    while len(groups) < n_notes:
+        # Split the longest nucleus so every note still gets a vowel to sing.
+        i = int(np.argmax([b - a for a, b in groups]))
+        a, b = groups[i]
+        mid = (a + b) // 2
+        groups[i:i + 1] = [(a, mid), (mid, b)]
+        groups = sorted(groups)
 
-        f0 = midi_to_freq(note_to_midi(note))
-        tgt = np.full(slot, f0)
-        if pf > 0 and glide_ms > 0:
-            g = min(int(glide_ms / 1000.0 * sr), slot // 2)
+    spans = []
+    for k, (v0, v1) in enumerate(groups):
+        start = 0 if k == 0 else (groups[k - 1][1] + v0) // 2
+        end = total if k == len(groups) - 1 else (v1 + groups[k + 1][0]) // 2
+        spans.append((start, max(start, v0), max(v0 + 1, v1), max(v1, end)))
+    return spans
+
+
+# ---------------------------------------------------------------------------
+# warp + melody
+# ---------------------------------------------------------------------------
+
+def _build_trajectory(fr, spans, notes, beat, sr, glide_ms, vib_depth,
+                      vib_rate, seed):
+    """Frame trajectory + target f0 for a phrase, one entry per output frame."""
+    fps = 1000.0 / fr.frame_period                       # frames per second
+    traj, f0, slots = [], [], []
+    prev_hz = 0.0
+    pos = 0
+    rng = np.random.default_rng(seed)
+
+    for (s0, v0, v1, s1), (note, beats) in zip(spans, notes):
+        n_out = max(int(beats * beat * fps), int(0.10 * fps))
+        f_s0, f_v0 = fr.samples_to_frame(s0), fr.samples_to_frame(v0)
+        f_v1, f_s1 = fr.samples_to_frame(v1), fr.samples_to_frame(s1)
+
+        # Consonants keep their natural length -- racing through a cluster like
+        # "str" makes it chirp -- and are compressed only when the note is too
+        # short to hold both them and a singable vowel.
+        on = int(max(0.0, f_v0 - f_s0))
+        co = int(max(0.0, f_s1 - f_v1))
+        budget = int(0.55 * n_out)
+        if on + co > budget and on + co > 0:
+            f = budget / (on + co)
+            on, co = int(on * f), int(co * f)
+        hold = max(1, n_out - on - co)
+
+        # The trajectory must be continuous: any jump in read position is an
+        # abrupt spectral change, i.e. an audible click.  Build it from knots
+        # that join exactly, collapsing a knot when its section has no frames.
+        vow_a = f_v0 if on else f_s0
+        vow_b = f_v1 if co else f_s1
+        seg = np.empty(n_out)
+        if on:
+            seg[:on] = np.linspace(f_s0, vow_a, on)
+        # Across the vowel, move quickly through the on-glide, dwell on the
+        # steady middle, then resolve the off-glide -- monotone, so it never
+        # jumps, and slow in the centre, so the note is a held vowel.
+        u = np.linspace(0.0, 1.0, hold)
+        ease = u + 0.85 * np.sin(2.0 * np.pi * u) / (2.0 * np.pi)
+        seg[on:on + hold] = vow_a + (vow_b - vow_a) * ease
+        if co:
+            seg[on + hold:] = np.linspace(vow_b, f_s1, n_out - on - hold)
+        traj.append(seg)
+
+        hz = midi_to_freq(note_to_midi(note))
+        line = np.full(n_out, hz)
+        if prev_hz > 0 and glide_ms > 0:
+            g = min(int(glide_ms / 1000.0 * fps), n_out // 2)
             if g > 1:
-                tgt[:g] = pf * (f0 / pf) ** np.linspace(0.0, 1.0, g)
-        f0_parts.append(tgt)
-        slots.append((opos, opos + slot, note_to_midi(note)))
-        opos += slot
-        pf = f0
-    return np.concatenate(ins_parts), np.concatenate(f0_parts), slots
+                line[:g] = prev_hz * (hz / prev_hz) ** np.linspace(0.0, 1.0, g)
+        f0.append(line)
+        slots.append((pos, pos + n_out, note_to_midi(note)))
+        pos += n_out
+        prev_hz = hz
 
+    traj = np.concatenate(traj)
+    f0 = np.concatenate(f0)
+    # The trajectory joins its sections without gaps, but its *slope* still
+    # steps at each knot, and a sudden change of read-rate is heard as a tick.
+    # A short moving average rounds those corners (C1) at negligible timing cost.
+    k = 5
+    traj = np.convolve(np.pad(traj, (k, k), mode="edge"),
+                       np.ones(k) / k, mode="same")[k:-k]
 
-def _f0_vibrato(f0_out, sr, seed):
-    n = f0_out.size
-    t = np.arange(n)
-    venv = np.clip((t / sr - 0.35) / 0.4, 0.0, 1.0)
-    cents = 18.0 * venv * np.sin(2.0 * np.pi * 5.6 * t / sr)
-    fl = np.random.default_rng(seed).standard_normal(n)
-    w = max(1, int(sr * 0.15))
-    fl = np.convolve(fl, np.ones(w) / w, mode="same")
-    cents += 2.5 * (fl / (np.std(fl) or 1.0))
-    return f0_out * 2.0 ** (cents / 1200.0)
-
-
-# ---------------------------------------------------------------------------
-# TD-PSOLA time + pitch warp
-# ---------------------------------------------------------------------------
-
-def _psola(x, sr, marks, f0s, voiced, in_of_out, f0_out):
-    """Overlap-add real grains onto the warped, re-pitched timeline."""
-    n_out = in_of_out.size
-    pad = 2048
-    out = np.zeros(n_out + pad)
-    nrm = np.zeros(n_out + pad)
-    nx = x.size
-    o = 0.0
-    while o < n_out:
-        oi = int(o)
-        ti = float(in_of_out[oi])
-        si = int(np.clip(ti, 0, nx - 1))
-        vc = voiced[si] and f0s[si] > 0
-        pin = float(np.clip(sr / f0s[si], 40.0, 900.0)) if vc else sr / 160.0
-        half = max(2, int(round(pin)))
-        k = int(np.searchsorted(marks, ti))
-        if k >= marks.size:
-            k = marks.size - 1
-        elif k > 0 and abs(marks[k - 1] - ti) < abs(marks[k] - ti):
-            k -= 1
-        a = int(marks[k])
-        g0, g1 = a - half, a + half
-        lo, hi = max(0, g0), min(nx, g1)
-        grain = np.zeros(2 * half)
-        grain[lo - g0:hi - g0] = x[lo:hi]
-        w = _hann(2 * half)
-        grain *= w
-        d0 = oi - half
-        dlo, dhi = max(0, d0), min(out.size, d0 + 2 * half)
-        if dhi > dlo:
-            out[dlo:dhi] += grain[dlo - d0:dhi - d0]
-            nrm[dlo:dhi] += w[dlo - d0:dhi - d0]
-        # Voiced vowels advance at the melody period (pitched); unvoiced
-        # consonants advance at their natural period (copied, unpitched).
-        if vc:
-            o += float(np.clip(sr / f0_out[oi], 40.0, 900.0))
-        else:
-            o += pin
-    m = nrm > 1e-6
-    out[m] /= nrm[m]
-    return out[:n_out]
-
-
-def _synthesize(mode, raw, sr, marks, f0s, voiced, in_of_out, f0_out,
-                formant_shift):
-    """The one stage that varies by ``voice_mode`` (see DESIGN.md).
-
-    ``natural`` -- TD-PSOLA on espeak's real waveform: real grains in, real
-    grains out, so the words keep espeak's exact pronunciation.
-    ``synth``   -- harmonic resynthesis for the voiced vowels (clean sinusoids at
-    the target pitch, smoother/more synthetic) with espeak's real unvoiced
-    consonants spliced back in, cross-faded by voicing.
-    """
-    if mode == "natural":
-        return _psola(raw, sr, marks, f0s, voiced, in_of_out, f0_out)
-
-    ana = harmonic.analyze(raw, sr)
-    frame_of_out = np.clip(in_of_out / ana["hop"], 0, ana["env"].shape[0] - 1)
-    harm = harmonic._harmonic(ana, frame_of_out, f0_out, sr,
-                              formant_shift=formant_shift)
-    harm = harm / (float(np.max(np.abs(harm))) or 1.0)
-    esp = np.interp(in_of_out, np.arange(raw.size, dtype=np.float64), raw)
-    esp = esp / (float(np.max(np.abs(esp))) or 1.0)
-    vfr = voiced[np.clip(in_of_out.astype(np.int64), 0, raw.size - 1)]
-    vw = np.clip(one_pole_lp_fft(vfr.astype(np.float64), sr, 70.0), 0.0, 1.0)
-    return vw * harm + (1.0 - vw) * esp
-
-
-def _sung_dynamics(out, sr, slots, evenness=0.85):
-    """Turn speech dynamics into *sung* dynamics.
-
-    espeak stresses words the way speech does, so unstressed syllables ("a",
-    "the", "-tle") come out much quieter and effectively drop out of the melody.
-    Singers instead give every syllable full voice.  This levels each note toward
-    the phrase's median loudness (``evenness`` = how much of the difference is
-    removed) and then re-applies a *musical* shape: a little louder toward higher
-    notes and the middle of the phrase.
-    """
-    n = out.size
-    levels = []
+    # Expression: vibrato that swells in after a note settles, plus a slow drift
+    # so sustained notes are never mathematically static.
+    t = np.arange(f0.size) / fps
+    cents = np.zeros(f0.size)
     for o0, o1, _ in slots:
-        seg = out[o0:min(o1, n)]
-        levels.append(float(np.sqrt(np.mean(seg ** 2))) if seg.size else 0.0)
-    live = [lv for lv in levels if lv > 1e-6]
-    ref = float(np.median(live)) if live else 1.0
+        loc = t[o0:o1] - t[o0]
+        env = np.clip((loc - 0.30) / 0.35, 0.0, 1.0)
+        cents[o0:o1] = vib_depth * env * np.sin(2.0 * np.pi * vib_rate * loc)
+    drift = rng.standard_normal(f0.size)
+    w = max(1, int(0.5 * fps))
+    drift = np.convolve(drift, np.ones(w) / w, mode="same")
+    cents += 4.0 * drift / (np.std(drift) or 1.0)
+    return traj, f0 * 2.0 ** (cents / 1200.0), slots
 
+
+def _sung_dynamics(fr, slots, evenness=0.7):
+    """Speech stresses words; singing gives every syllable full voice.
+
+    Levels each note toward the phrase median (in the spectral envelope, before
+    synthesis) and then applies a musical arc.
+    """
+    power = np.sqrt(fr.sp.sum(axis=1) + 1e-12)
+    levels = [float(np.mean(power[a:b])) or 1e-6 for a, b, _ in slots]
+    ref = float(np.median([lv for lv in levels if lv > 1e-6]) or 1.0)
     mids = [m for _, _, m in slots]
     lo, hi = min(mids), max(mids)
-    gain = np.ones(n)
-    for j, (o0, o1, m) in enumerate(slots):
-        lv = levels[j]
-        even = np.clip((ref / lv) ** evenness, 0.45, 3.0) if lv > 1e-6 else 1.0
+
+    gain = np.ones(fr.n)
+    for j, (a, b, m) in enumerate(slots):
+        even = np.clip((ref / levels[j]) ** evenness, 0.5, 2.2)
         pn = (m - lo) / (hi - lo) if hi > lo else 0.5
         arc = np.sin(np.pi * (j + 0.5) / len(slots))
-        gain[o0:min(o1, n)] = even * (0.84 + 0.09 * pn + 0.09 * arc)
-    return out * one_pole_lp_fft(gain, sr, 7.0)
+        gain[a:b] = even * (0.86 + 0.08 * pn + 0.08 * arc)
+    k = max(1, int(0.05 * 1000.0 / fr.frame_period))
+    gain = np.convolve(gain, np.ones(k) / k, mode="same")
+    # Envelope is a power spectrum, so amplitude gain g -> g**2 on sp.
+    return world.Frames(fr.f0, fr.sp * (gain ** 2)[:, None], fr.ap, fr.sr,
+                        fr.frame_period)
 
 
-def _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, seed,
-                   voice_mode="natural", formant_shift=1.0):
+# ---------------------------------------------------------------------------
+# phrase / song rendering
+# ---------------------------------------------------------------------------
+
+def _render_phrase(phrase, sr, voice_name, beat, glide_ms, vib_depth, vib_rate,
+                   formant_shift, breath, seed):
     text = " ".join(word for word, _ in phrase)
     notes = [nt for _, wnotes in phrase for nt in wnotes]
-    raw = tts.text_to_vocal(text, sr, voice=voice, pitch=base_pitch, wpm=wpm)
-    raw = util.normalize_peak(raw, 0.95)
-    track = pitch.track_pitch(raw, sr, max_f0=1000.0)
-    f0s, voiced = track.to_per_sample(raw.size)
-    marks = _epochs(sr, f0s, voiced, raw.size)
-    nuclei, e = _nuclei(raw, sr, voiced, len(notes))
-    in_of_out, f0_out, slots = _build_warp(raw, sr, f0s, voiced, e, nuclei,
-                                           notes, beat, glide_ms)
-    f0_out = _f0_vibrato(f0_out, sr, seed)
-    out = _synthesize(voice_mode, raw, sr, marks, f0s, voiced, in_of_out,
-                      f0_out, formant_shift)
+    utt = voice.speak(text, name=voice_name)
+    fr = world.analyze(utt.audio, utt.sr)
+    spans = _syllables(utt, len(notes))
 
-    out = _sung_dynamics(out, sr, slots)
-    at = min(int(0.02 * sr), out.size)
-    rel = min(int(0.13 * sr), out.size)
-    out[:at] *= np.linspace(0.0, 1.0, at)
-    out[-rel:] *= np.linspace(1.0, 0.0, rel) ** 1.3
-    return out.astype(np.float32)
+    traj, f0, slots = _build_trajectory(fr, spans, notes, beat, utt.sr,
+                                        glide_ms, vib_depth, vib_rate, seed)
+    warped = world.resample_frames(fr, traj)
+    # Voiced frames sing the melody; unvoiced frames stay unvoiced (consonants).
+    sung = world.Frames(np.where(warped.f0 > 0, f0, 0.0), warped.sp, warped.ap,
+                        warped.sr, warped.frame_period)
+    sung = world.shift_formants(sung, formant_shift)
+    sung = world.breathiness(sung, breath)
+    sung = _sung_dynamics(sung, slots)
+
+    y = world.synthesize(sung)
+    if utt.sr != sr:
+        y = util.resample(y, utt.sr, sr)
+    n = y.size
+    at = min(int(0.015 * sr), n)
+    rel = min(int(0.12 * sr), n)
+    y[:at] *= np.linspace(0.0, 1.0, at)
+    y[-rel:] *= np.linspace(1.0, 0.0, rel) ** 1.3
+    return y
 
 
-# ---------------------------------------------------------------------------
-# song assembly + mastering
-# ---------------------------------------------------------------------------
-
-def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
-         glide_ms=40.0, seed=5, voice_mode="natural", formant_shift=1.0):
-    """Render a word-based score to a continuous, phrased sung mono line.
-
-    ``voice_mode`` selects the synthesis stage: ``"natural"`` (TD-PSOLA on real
-    speech — best pronunciation/flow) or ``"synth"`` (harmonic resynthesis —
-    smoother, more synthetic).  ``formant_shift`` > 1 brightens/raises the vocal
-    tract in ``synth`` mode.
-    """
-    beat = 60.0 / bpm
-    phrases, t, cur, cur_t = [], 0.0, [], 0.0
-    for it in score:
-        if it[0] == "rest":
+def _phrases(score, beat):
+    """Group a score into (start_seconds, [(word, notes), ...]) phrases."""
+    out, t, cur, cur_t = [], 0.0, [], 0.0
+    for item in score:
+        if item[0] == "rest":
             if cur:
-                phrases.append((cur_t, cur))
+                out.append((cur_t, cur))
                 cur = []
-            t += it[1] * beat
+            t += item[1] * beat
         else:
             if not cur:
                 cur_t = t
-            cur.append(it)
-            t += sum(b for _, b in it[1]) * beat
+            cur.append(item)
+            t += sum(b for _, b in item[1]) * beat
     if cur:
-        phrases.append((cur_t, cur))
+        out.append((cur_t, cur))
+    return out, t
 
-    out = np.zeros(int(t * sr) + sr)
-    sd = seed
-    for start, phrase in phrases:
-        buf = _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms,
-                             sd, voice_mode=voice_mode,
-                             formant_shift=formant_shift)
-        sd += 1
+
+def sing(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
+         glide_ms=45.0, vib_depth=22.0, vib_rate=5.5, formant_shift=1.0,
+         breath=0.0, seed=5):
+    """Render a word-based score to a continuous, phrased sung mono line."""
+    beat = 60.0 / bpm
+    phrases, total = _phrases(score, beat)
+    out = np.zeros(int(total * sr) + sr, dtype=np.float32)
+    for k, (start, phrase) in enumerate(phrases):
+        buf = _render_phrase(phrase, sr, voice_name, beat, glide_ms, vib_depth,
+                             vib_rate, formant_shift, breath, seed + k)
+        # Each phrase is levelled on its own so one loud line can't bury another.
+        buf = util.normalize_peak(buf, 0.9)
         p = int(start * sr)
         e = min(out.size, p + buf.size)
         out[p:e] += buf[:e - p]
-    return out[:int(t * sr) + int(0.3 * sr)].astype(np.float32)
+    out = out[:int(total * sr) + int(0.3 * sr)]
+    return util.normalize_peak(out, 0.9)
 
+
+# ---------------------------------------------------------------------------
+# mastering
+# ---------------------------------------------------------------------------
 
 def _voice_timbre(x, sr):
-    chain = [
-        highpass(105.0, sr, 0.7),
-        low_shelf(320.0, sr, 2.5),
-        peaking(3000.0, sr, 1.3, 2.5),
-        high_shelf(8500.0, sr, 3.0),
-    ]
-    return biquad_fft(chain, x)
+    """A light touch only -- the neural voice already has a natural spectrum."""
+    return biquad_fft([highpass(85.0, sr, 0.7),
+                       low_shelf(300.0, sr, 1.5),
+                       peaking(3000.0, sr, 1.2, 1.5),
+                       high_shelf(9000.0, sr, 1.5)], x)
 
 
-def _deess(x, sr, amount=0.55):
+def _deess(x, sr, amount=0.5):
     hi = biquad_fft(highpass(6500.0, sr, 0.7), x)
     lo = np.asarray(x, dtype=np.float64) - hi
     env = one_pole_lp_fft(np.abs(hi), sr, 55.0)
     nz = env[env > 1e-5]
-    thr = 1.6 * float(np.median(nz)) if nz.size else 1.0
+    thr = 1.8 * float(np.median(nz)) if nz.size else 1.0
     gain = one_pole_lp_fft(np.clip(thr / (env + 1e-6), 1.0 - amount, 1.0), sr, 80.0)
     return (lo + hi * gain).astype(np.float32)
 
 
-def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64,
-                reverb_mix=0.18, width=1.2, voice_mode="natural",
-                formant_shift=1.0):
-    """Full render: sing -> timbre -> de-ess -> stereo -> reverb."""
-    dry = sing(score, sr, bpm, voice, base_pitch, voice_mode=voice_mode,
-               formant_shift=formant_shift)
+def render_song(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
+                reverb_mix=0.16, width=1.15, **kw):
+    """Full render: sing -> timbre -> de-ess -> stereo -> reverb -> master."""
+    dry = sing(score, sr, bpm, voice_name, **kw)
     dry = _voice_timbre(dry, sr)
     dry = _deess(dry, sr)
     dry = util.normalize_peak(dry, 0.92)
-    stereo = effects.stereoize(dry, sr, haas_ms=9.0, width=width)
-    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.48,
-                            width=1.2)
+    stereo = effects.stereoize(dry, sr, haas_ms=8.0, width=width)
+    stereo = effects.reverb(stereo, sr, mix=reverb_mix, size=0.7, damp=0.5,
+                            width=1.15)
     stereo = util.normalize_percentile(stereo, target=0.85)
-    stereo = util.soft_limit(stereo, 0.98)
-    return stereo
+    return util.soft_limit(stereo, 0.98)

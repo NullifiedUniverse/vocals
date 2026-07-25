@@ -48,8 +48,13 @@ def discontinuity(x, factor=25.0):
     if x.size < 3:
         return {"count": 0, "rate": 0.0}
     d = np.abs(np.diff(x))
-    nz = d[d > 0]
-    med = float(np.median(nz)) if nz.size else 0.0
+    # Reference the typical step of the *loud* part of the signal.  Taking it
+    # over everything lets long near-silences drive the median to ~0, which makes
+    # ordinary speech look like it is full of clicks.
+    amp = np.abs(x[:-1])
+    active = d[amp > 0.05 * (float(amp.max()) or 1.0)]
+    ref = active if active.size > 32 else d[d > 0]
+    med = float(np.median(ref)) if ref.size else 0.0
     if med <= 0:
         return {"count": 0, "rate": 0.0}
     count = int(np.sum(d > factor * med))
