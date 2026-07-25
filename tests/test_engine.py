@@ -13,7 +13,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from daftdsp import EngineParams, process, util  # noqa: E402
-from daftdsp import biquad, effects, pitch, psola, singer, synth, vocoder  # noqa: E402
+from daftdsp import biquad, effects, pitch, psola, quality, singer  # noqa: E402
+from daftdsp import songs, synth, vocoder  # noqa: E402
 
 SR = 44100
 
@@ -137,20 +138,55 @@ def test_params_from_dict_coercion():
     assert p.n_bands == 24 and p.enable_phaser is False and p.sat_drive == 3.5
 
 
-def test_aria_singer_clean_and_intune():
-    # A held "lah" on A4 must be in tune and essentially click-free.
-    dry = singer.sing([("lah", [("A4", 2)])], SR, bpm=100)
-    assert dry.size > 0 and np.all(np.isfinite(dry))
-    d = np.abs(np.diff(dry))
-    md = np.median(d[d > 0]) + 1e-9
-    assert int(np.sum(d > 40 * md)) < 3          # no click storm
-    tr = pitch.track_pitch(dry, SR, max_f0=1100.0)
-    voiced = tr.f0[tr.voiced]
-    med = float(np.median(voiced)) if voiced.size else 0.0
-    assert abs(1200 * np.log2(med / 440.0)) < 70
-    st = singer.render_song([("doe", [("C4", 1)]), ("ray", [("D4", 1)])],
-                            SR, bpm=120)
+def test_quality_metrics_detect_defects():
+    """The metrics themselves must flag what they claim to flag."""
+    t = np.arange(SR) / SR
+    clean = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    assert quality.discontinuity(clean)["count"] == 0
+    glitched = clean.copy()
+    glitched[::5000] = 0.99                       # inject pops
+    assert quality.discontinuity(glitched)["count"] > 5
+    decaying = clean * np.linspace(1.0, 0.05, clean.size)
+    assert quality.sustain_flatness(decaying, SR) > quality.sustain_flatness(clean, SR)
+    gapped = clean.copy()
+    gapped[SR // 3:SR // 2] = 0.0                 # a vanished syllable
+    assert quality.dropout_ratio(gapped, SR) > quality.dropout_ratio(clean, SR)
+
+
+def test_aria_song_quality_regression():
+    """A real sung phrase must stay in tune, click-free and audible throughout."""
+    score = [("twinkle", [("C4", 1), ("C4", 1)]), ("little", [("G4", 1), ("G4", 1)]),
+             ("star", [("A4", 2)])]
+    bpm = 120
+    dry = singer.sing(score, SR, bpm=bpm)
+    tl = songs.note_timeline(score, bpm)
+    rep = quality.summarize(dry, SR, tl)
+    assert rep["headroom"]["finite"] and rep["headroom"]["clipped"] == 0
+    assert rep["discontinuity"]["count"] <= 4          # clicks (plosives allowed)
+    assert rep["dropout"] < 0.20                       # no vanished syllables
+    assert rep["pitch"]["within_50c"] == rep["pitch"]["notes"]
+    assert rep["pitch"]["mean_abs_cents"] < 30
+
+
+def test_aria_voice_modes_and_master():
+    score = [("doe", [("C4", 1)]), ("ray", [("D4", 1)]), ("me", [("E4", 2)])]
+    for mode in ("natural", "synth"):
+        dry = singer.sing(score, SR, bpm=120, voice_mode=mode)
+        assert dry.size > 0 and np.all(np.isfinite(dry))
+        assert quality.discontinuity(dry)["count"] <= 4
+    st = singer.render_song(score, SR, bpm=120)
     assert st.ndim == 2 and st.shape[1] == 2 and np.all(np.isfinite(st))
+    assert quality.headroom(st)["clipped"] == 0
+
+
+def test_short_notes_keep_their_vowel():
+    """Fast notes must not let consonants crowd the vowel out of the slot."""
+    score = [("merrily", [("C5", 1), ("C5", 1), ("C5", 1)]),
+             ("merrily", [("G4", 1), ("G4", 1), ("G4", 1)])]
+    dry = singer.sing(score, SR, bpm=200)              # deliberately fast
+    tl = songs.note_timeline(score, 200)
+    assert np.all(np.isfinite(dry))
+    assert quality.dropout_ratio(dry, SR, tl) < 0.35
 
 
 def test_full_engine_stereo_finite():

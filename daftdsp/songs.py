@@ -130,6 +130,32 @@ DIGITAL_HEART = {
     ],
 }
 
+def note_timeline(score, bpm):
+    """Expand a score into ``[(start_s, dur_s, midi), ...]`` (rests skipped).
+
+    Used to check a render against what it was supposed to sing.
+    """
+    from .util import note_to_midi
+
+    beat = 60.0 / bpm
+    out, t = [], 0.0
+    for item in score:
+        if item[0] == "rest":
+            t += item[1] * beat
+            continue
+        for note, beats in item[1]:
+            dur = beats * beat
+            out.append((t, dur, note_to_midi(note)))
+            t += dur
+    return out
+
+
+def syllable_count(score):
+    """Total sung syllables (notes) in a score."""
+    return sum(len(notes) for item, notes in
+               ((i[0], i[1]) for i in score) if item != "rest")
+
+
 SONGS = {
     "scale": SCALE,
     "twinkle": TWINKLE,

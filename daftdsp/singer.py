@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import effects, pitch, tts, util
+from . import effects, harmonic, pitch, tts, util
 from .biquad import (biquad_fft, high_shelf, highpass, low_shelf,
                      one_pole_lp_fft, peaking)
 from .util import midi_to_freq, note_to_midi
@@ -111,6 +111,12 @@ def _build_warp(x, sr, f0s, voiced, e, nuclei, notes, beat, glide_ms):
         slot = max(int(beats * beat * sr), int(0.11 * sr))
         onset = min(max(0, v0 - s0), int(0.13 * sr))
         coda = min(max(0, s1 - v1), int(0.12 * sr))
+        # Guard: on a short note the consonants must not crowd out the vowel --
+        # compress them proportionally so the vowel always keeps most of the slot.
+        budget = int(0.55 * slot)
+        if onset + coda > budget and onset + coda > 0:
+            f = budget / (onset + coda)
+            onset, coda = int(onset * f), int(coda * f)
         vowel_out = max(1, slot - onset - coda)
 
         ins = np.empty(slot)
@@ -203,7 +209,63 @@ def _psola(x, sr, marks, f0s, voiced, in_of_out, f0_out):
     return out[:n_out]
 
 
-def _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, seed):
+def _synthesize(mode, raw, sr, marks, f0s, voiced, in_of_out, f0_out,
+                formant_shift):
+    """The one stage that varies by ``voice_mode`` (see DESIGN.md).
+
+    ``natural`` -- TD-PSOLA on espeak's real waveform: real grains in, real
+    grains out, so the words keep espeak's exact pronunciation.
+    ``synth``   -- harmonic resynthesis for the voiced vowels (clean sinusoids at
+    the target pitch, smoother/more synthetic) with espeak's real unvoiced
+    consonants spliced back in, cross-faded by voicing.
+    """
+    if mode == "natural":
+        return _psola(raw, sr, marks, f0s, voiced, in_of_out, f0_out)
+
+    ana = harmonic.analyze(raw, sr)
+    frame_of_out = np.clip(in_of_out / ana["hop"], 0, ana["env"].shape[0] - 1)
+    harm = harmonic._harmonic(ana, frame_of_out, f0_out, sr,
+                              formant_shift=formant_shift)
+    harm = harm / (float(np.max(np.abs(harm))) or 1.0)
+    esp = np.interp(in_of_out, np.arange(raw.size, dtype=np.float64), raw)
+    esp = esp / (float(np.max(np.abs(esp))) or 1.0)
+    vfr = voiced[np.clip(in_of_out.astype(np.int64), 0, raw.size - 1)]
+    vw = np.clip(one_pole_lp_fft(vfr.astype(np.float64), sr, 70.0), 0.0, 1.0)
+    return vw * harm + (1.0 - vw) * esp
+
+
+def _sung_dynamics(out, sr, slots, evenness=0.85):
+    """Turn speech dynamics into *sung* dynamics.
+
+    espeak stresses words the way speech does, so unstressed syllables ("a",
+    "the", "-tle") come out much quieter and effectively drop out of the melody.
+    Singers instead give every syllable full voice.  This levels each note toward
+    the phrase's median loudness (``evenness`` = how much of the difference is
+    removed) and then re-applies a *musical* shape: a little louder toward higher
+    notes and the middle of the phrase.
+    """
+    n = out.size
+    levels = []
+    for o0, o1, _ in slots:
+        seg = out[o0:min(o1, n)]
+        levels.append(float(np.sqrt(np.mean(seg ** 2))) if seg.size else 0.0)
+    live = [lv for lv in levels if lv > 1e-6]
+    ref = float(np.median(live)) if live else 1.0
+
+    mids = [m for _, _, m in slots]
+    lo, hi = min(mids), max(mids)
+    gain = np.ones(n)
+    for j, (o0, o1, m) in enumerate(slots):
+        lv = levels[j]
+        even = np.clip((ref / lv) ** evenness, 0.45, 3.0) if lv > 1e-6 else 1.0
+        pn = (m - lo) / (hi - lo) if hi > lo else 0.5
+        arc = np.sin(np.pi * (j + 0.5) / len(slots))
+        gain[o0:min(o1, n)] = even * (0.84 + 0.09 * pn + 0.09 * arc)
+    return out * one_pole_lp_fft(gain, sr, 7.0)
+
+
+def _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, seed,
+                   voice_mode="natural", formant_shift=1.0):
     text = " ".join(word for word, _ in phrase)
     notes = [nt for _, wnotes in phrase for nt in wnotes]
     raw = tts.text_to_vocal(text, sr, voice=voice, pitch=base_pitch, wpm=wpm)
@@ -215,17 +277,10 @@ def _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, seed):
     in_of_out, f0_out, slots = _build_warp(raw, sr, f0s, voiced, e, nuclei,
                                            notes, beat, glide_ms)
     f0_out = _f0_vibrato(f0_out, sr, seed)
-    out = _psola(raw, sr, marks, f0s, voiced, in_of_out, f0_out)
+    out = _synthesize(voice_mode, raw, sr, marks, f0s, voiced, in_of_out,
+                      f0_out, formant_shift)
 
-    # Gentle per-note dynamics + phrase edges.
-    mids = [m for _, _, m in slots]
-    lo, hi = min(mids), max(mids)
-    gain = np.ones(out.size)
-    for j, (o0, o1, m) in enumerate(slots):
-        pn = (m - lo) / (hi - lo) if hi > lo else 0.5
-        arc = np.sin(np.pi * (j + 0.5) / len(slots))
-        gain[o0:min(o1, out.size)] = 0.82 + 0.10 * pn + 0.10 * arc
-    out = out * one_pole_lp_fft(gain, sr, 10.0)
+    out = _sung_dynamics(out, sr, slots)
     at = min(int(0.02 * sr), out.size)
     rel = min(int(0.13 * sr), out.size)
     out[:at] *= np.linspace(0.0, 1.0, at)
@@ -238,8 +293,14 @@ def _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, seed):
 # ---------------------------------------------------------------------------
 
 def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
-         glide_ms=40.0, seed=5):
-    """Render a word-based score to a continuous, phrased sung mono line."""
+         glide_ms=40.0, seed=5, voice_mode="natural", formant_shift=1.0):
+    """Render a word-based score to a continuous, phrased sung mono line.
+
+    ``voice_mode`` selects the synthesis stage: ``"natural"`` (TD-PSOLA on real
+    speech — best pronunciation/flow) or ``"synth"`` (harmonic resynthesis —
+    smoother, more synthetic).  ``formant_shift`` > 1 brightens/raises the vocal
+    tract in ``synth`` mode.
+    """
     beat = 60.0 / bpm
     phrases, t, cur, cur_t = [], 0.0, [], 0.0
     for it in score:
@@ -259,7 +320,9 @@ def sing(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64, wpm=150,
     out = np.zeros(int(t * sr) + sr)
     sd = seed
     for start, phrase in phrases:
-        buf = _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms, sd)
+        buf = _render_phrase(phrase, sr, voice, base_pitch, wpm, beat, glide_ms,
+                             sd, voice_mode=voice_mode,
+                             formant_shift=formant_shift)
         sd += 1
         p = int(start * sr)
         e = min(out.size, p + buf.size)
@@ -288,9 +351,11 @@ def _deess(x, sr, amount=0.55):
 
 
 def render_song(score, sr=44100, bpm=100, voice="en+f4", base_pitch=64,
-                reverb_mix=0.18, width=1.2):
+                reverb_mix=0.18, width=1.2, voice_mode="natural",
+                formant_shift=1.0):
     """Full render: sing -> timbre -> de-ess -> stereo -> reverb."""
-    dry = sing(score, sr, bpm, voice, base_pitch)
+    dry = sing(score, sr, bpm, voice, base_pitch, voice_mode=voice_mode,
+               formant_shift=formant_shift)
     dry = _voice_timbre(dry, sr)
     dry = _deess(dry, sr)
     dry = util.normalize_peak(dry, 0.92)
