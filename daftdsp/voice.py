@@ -190,7 +190,7 @@ class NeuralVoice:
                                       include_alignments=True)
         self.sr = int(self._voice.config.sample_rate)
 
-    def speak(self, text: str) -> Utterance:
+    def speak(self, text: str, length_scale: float = 1.0) -> Utterance:
         # The model is a VITS variant: by default it samples noise for both the
         # waveform and the phoneme durations, so the same words come out slightly
         # different every render -- and some takes are audibly worse than others.
@@ -198,7 +198,8 @@ class NeuralVoice:
         # be: the same input must always give the same performance.
         from piper import SynthesisConfig
 
-        cfg = SynthesisConfig(noise_scale=0.0, noise_w_scale=0.0)
+        cfg = SynthesisConfig(noise_scale=0.0, noise_w_scale=0.0,
+                              length_scale=float(max(0.25, length_scale)))
         chunks = list(self._voice.synthesize(text, syn_config=cfg,
                                              include_alignments=True))
         audio = np.concatenate([c.audio_float_array for c in chunks]).astype(np.float32)
@@ -229,12 +230,22 @@ def available(name: str = DEFAULT_VOICE) -> bool:
     return get_voice(name) is not None
 
 
-def speak(text: str, name: str = DEFAULT_VOICE, sr: int | None = None) -> Utterance:
-    """Synthesise ``text``.  Falls back to espeak (lower quality, phoneme spans
-    estimated) when no neural model is available."""
+def speak(text: str, name: str = DEFAULT_VOICE, sr: int | None = None,
+          length_scale: float = 1.0) -> Utterance:
+    """Synthesise ``text``.
+
+    ``length_scale`` > 1 makes the model speak more slowly.  That matters a great
+    deal for singing: asking it for speech and then stretching the result 3-4x to
+    reach musical note lengths freezes the vowels and smears the consonants,
+    whereas asking for a slow delivery in the first place produces material that
+    is already close to the required duration.
+
+    Falls back to espeak (lower quality, phoneme spans estimated) when no neural
+    model is available.
+    """
     v = get_voice(name)
     if v is not None:
-        utt = v.speak(text)
+        utt = v.speak(text, length_scale=length_scale)
     else:
         utt = _espeak_fallback(text)
     if sr and sr != utt.sr:

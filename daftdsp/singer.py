@@ -350,7 +350,15 @@ def _render_phrase(phrase, sr, voice_name, beat, formant_shift, breath, seed,
                    target=None):
     text = " ".join(word for word, _ in phrase)
     notes = [nt for _, wnotes in phrase for nt in wnotes]
-    # Close the between-word pauses: a sung phrase is one connected line.
+    # NOTE on the source rate.  The pipeline stretches speech by 3-4x to reach
+    # musical note lengths, which is the deepest limitation here: it is what
+    # freezes vowels and smears consonants.  Asking the voice for a slower
+    # delivery (voice.speak(length_scale=...)) shrinks that ratio and is the
+    # right idea, but it lengthens consonants and pauses too, which this
+    # planner's onset/coda budgets are not built for -- measured as a large
+    # regression (average 80.9 -> 60.2 at full compensation, 83.6 -> 88.9 on a
+    # subset even at half).  Making it pay off needs the planner reworked for
+    # slow source material, so the source is left at speech rate for now.
     utt = voice.speak(text, name=voice_name).legato()
     fr = world.analyze(utt.audio, utt.sr)
     fps = 1000.0 / fr.frame_period
