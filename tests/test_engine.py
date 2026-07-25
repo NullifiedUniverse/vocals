@@ -153,6 +153,22 @@ def test_quality_metrics_detect_defects():
     assert quality.dropout_ratio(gapped, SR) > quality.dropout_ratio(clean, SR)
 
 
+def test_pitch_metric_folds_octaves_but_not_wrong_notes():
+    """Octave reads are folded (and reported); genuinely wrong notes are not."""
+    t = np.arange(SR) / SR
+    octave_up = (0.7 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+    rows, stats = quality.pitch_errors(octave_up, SR, [(0.0, 1.0, 69)])  # target A4
+    assert abs(rows[0]["cents"]) < 30           # folded back onto A4
+    assert abs(rows[0]["raw_cents"] - 1200) < 30    # the raw read is kept
+    assert stats["octave_flips"] == 1               # and surfaced, not hidden
+
+    # A semitone-flat note must still be reported as an error.
+    flat = (0.7 * np.sin(2 * np.pi * 415.3 * t)).astype(np.float32)
+    rows2, stats2 = quality.pitch_errors(flat, SR, [(0.0, 1.0, 69)])
+    assert abs(rows2[0]["cents"]) > 80
+    assert stats2["within_50c"] == 0
+
+
 def test_aria_song_quality_regression():
     """A real sung phrase must stay in tune, click-free and audible throughout."""
     score = [("twinkle", [("C4", 1), ("C4", 1)]), ("little", [("G4", 1), ("G4", 1)]),

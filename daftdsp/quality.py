@@ -78,6 +78,13 @@ def pitch_errors(x, sr, timeline, max_f0=1200.0, lo=0.45, hi=0.85):
     ``timeline`` is a list of ``(start_s, dur_s, midi)``.  Each note is sampled
     over the ``lo``..``hi`` fraction of its slot (skipping the attack/release)
     and compared with the intended pitch.
+
+    Detected pitches are **octave-folded** toward the target before the error is
+    computed, and the number of folds is reported as ``octave_flips``.  A sung
+    vowel can have a weak fundamental with strong upper harmonics ("missing
+    fundamental"), where every pitch tracker reads an octave high even though the
+    waveform really is periodic at the intended note and is heard that way.
+    Folding measures the perceived pitch; the flip count keeps it visible.
     """
     m = to_mono(x)
     track = _pitch.track_pitch(m, sr, max_f0=max_f0)
@@ -91,12 +98,15 @@ def pitch_errors(x, sr, timeline, max_f0=1200.0, lo=0.45, hi=0.85):
         want = midi_to_freq(midi)
         if seg.size:
             det = float(np.median(seg))
-            cents = 1200.0 * np.log2(det / want)
+            raw_cents = 1200.0 * np.log2(det / want)
+            octaves = int(round(raw_cents / 1200.0))
+            cents = raw_cents - 1200.0 * octaves
         else:
-            det, cents = 0.0, float("nan")
+            det, raw_cents, octaves, cents = 0.0, float("nan"), 0, float("nan")
         rows.append({"midi": midi, "target_hz": want, "detected_hz": det,
-                     "cents": cents})
+                     "cents": cents, "raw_cents": raw_cents, "octaves": octaves})
     valid = np.array([r["cents"] for r in rows if np.isfinite(r["cents"])])
+    flips = int(sum(1 for r in rows if r["octaves"]))
     stats = {
         "notes": len(rows),
         "measured": int(valid.size),
@@ -104,6 +114,7 @@ def pitch_errors(x, sr, timeline, max_f0=1200.0, lo=0.45, hi=0.85):
         "median_abs_cents": float(np.median(np.abs(valid))) if valid.size else float("nan"),
         "within_50c": int(np.sum(np.abs(valid) < 50)),
         "within_100c": int(np.sum(np.abs(valid) < 100)),
+        "octave_flips": flips,
     }
     return rows, stats
 
@@ -222,7 +233,8 @@ def format_report(rep, name=""):
     if "pitch" in rep:
         p = rep["pitch"]
         lines.append(f"   pitch    {p['within_50c']}/{p['notes']} within 50c  "
-                     f"mean |err| {p['mean_abs_cents']:.0f}c")
+                     f"mean |err| {p['mean_abs_cents']:.0f}c  "
+                     f"octave-folds {p['octave_flips']}")
     lines.append(f"   tone     centroid {s['centroid']:.0f} Hz  " +
                  " ".join(f"{k}:{v}%" for k, v in list(s["bands"].items())[:5]))
     return "\n".join(lines)
