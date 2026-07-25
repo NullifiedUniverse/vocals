@@ -93,6 +93,31 @@ python examples/sing_demo.py            # render every song -> renders/aria_*.wa
 python examples/sing_demo.py twinkle    # just one
 ```
 
+### Songs with a band
+
+A song can carry a chord chart, and the instrumental is synthesised from this
+project's own from-scratch DSP -- no samples, no extra dependencies:
+
+| part | how it is made |
+|---|---|
+| keys | the chord held on the polyphonic oscillator bank, low-passed into a pad |
+| bass | the chord root two octaves down, plucked on each beat |
+| drums | kick, snare and hats built from a pitch-dropping sine and filtered noise |
+
+The band is **side-chain ducked by the vocal** and has a dip carved at 1.8 kHz
+where the voice lives, so the words stay in front.
+
+```python
+from daftdsp import singer
+from daftdsp.songs import SONGS
+s = SONGS["city_lights"]
+audio = singer.render_song(s["score"], bpm=s["bpm"], chords=s["chords"])
+```
+
+Two originals ship with full arrangements -- `city_lights` (Am-F-C-G) and
+`paper_boats` (C-Am-F-G) -- and the Sing tab has an editable **Band** box
+(`CHORD beats` per line; leave it blank for voice only).
+
 ### Quality is measured, not guessed
 
 `daftdsp/quality.py` provides objective metrics — click/discontinuity rate,
@@ -135,7 +160,8 @@ The package `daftdsp/` is one module per DSP stage:
 | `world.py`    | **WORLD** vocoder front-end: analysis, frame time-warp, formant shift, breathiness, resynthesis |
 | `singer.py`   | **Aria** singer: whole-phrase neural speech → phoneme-exact alignment → continuous vowel warp → melody re-pitch → WORLD resynthesis → sung dynamics → master |
 
-| `songs.py`    | Word-based scores (`SONGS`), the editable text score format (`parse_score`/`format_score`) and score helpers |
+| `songs.py`    | Word-based scores (`SONGS`), chord charts, the editable text score format (`parse_score`/`format_score`) and score helpers |
+| `arrangement.py` | Instrumental backing from a chord chart -- keys, bass, drums -- and the vocal-first mix (ducking + a dip where the voice sits) |
 | `quality.py`  | Objective quality metrics (clicks, cents error, sustain, dropout, headroom, spectrum) used by tests, the report tool and the web app |
 
 ### A note on speed

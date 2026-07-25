@@ -215,6 +215,54 @@ def syllable_count(score):
                ((i[0], i[1]) for i in score) if item != "rest")
 
 
+# ---------------------------------------------------------------------------
+# Songs with a full instrumental arrangement.  ``chords`` is a chart of
+# (chord, beats) rendered by daftdsp.arrangement into keys, bass and drums.
+# Melodies and lyrics here are original.
+# ---------------------------------------------------------------------------
+
+CITY_LIGHTS = {
+    "bpm": 96,
+    "chords": [("Am", 4), ("F", 4), ("C", 4), ("G", 4),
+               ("Am", 4), ("F", 4), ("C", 4), ("G", 4),
+               ("F", 4), ("G", 4), ("Am", 4), ("Am", 4),
+               ("F", 4), ("G", 4), ("C", 4), ("C", 4)],
+    "score": [
+        ("cit", [("A4", 1)]), ("y", [("A4", 1)]), ("lights", [("C5", 2)]),
+        ("are", [("A4", 1)]), ("call", [("G4", 1)]), ("ing", [("E4", 2)]),
+        ("rest", 2),
+        ("through", [("F4", 1)]), ("the", [("G4", 1)]), ("rain", [("A4", 2)]),
+        ("I", [("G4", 1)]), ("walk", [("E4", 1)]), ("home", [("C4", 2)]),
+        ("rest", 2),
+        ("ev", [("C5", 1)]), ("ry", [("B4", 1)]), ("win", [("A4", 1)]),
+        ("dow", [("G4", 1)]), ("holds", [("A4", 2)]), ("a", [("G4", 1)]),
+        ("song", [("E4", 3)]), ("rest", 2),
+        ("and", [("F4", 1)]), ("I", [("G4", 1)]), ("sing", [("A4", 1)]),
+        ("a", [("G4", 1)]), ("long", [("C4", 4)]),
+    ],
+}
+
+PAPER_BOATS = {
+    "bpm": 84,
+    "chords": [("C", 4), ("Am", 4), ("F", 4), ("G", 4),
+               ("C", 4), ("Am", 4), ("F", 4), ("G", 4),
+               ("Am", 4), ("G", 4), ("F", 4), ("C", 4),
+               ("F", 4), ("G", 4), ("C", 4), ("C", 4)],
+    "score": [
+        ("pa", [("E4", 1)]), ("per", [("E4", 1)]), ("boats", [("G4", 2)]),
+        ("on", [("E4", 1)]), ("the", [("D4", 1)]), ("stream", [("C4", 2)]),
+        ("rest", 2),
+        ("car", [("E4", 1)]), ("ry", [("G4", 1)]), ("ev", [("A4", 1)]),
+        ("ery", [("G4", 1)]), ("thing", [("E4", 2)]), ("I", [("D4", 1)]),
+        ("dream", [("C4", 3)]), ("rest", 2),
+        ("slow", [("A4", 2)]), ("ly", [("G4", 2)]), ("dri", [("E4", 1)]),
+        ("fting", [("D4", 1)]), ("out", [("C4", 2)]), ("of", [("D4", 1)]),
+        ("view", [("E4", 3)]), ("rest", 2),
+        ("I", [("F4", 1)]), ("fold", [("E4", 1)]), ("an", [("D4", 1)]),
+        ("oth", [("E4", 1)]), ("er", [("D4", 1)]), ("one", [("C4", 4)]),
+    ],
+}
+
 SONGS = {
     "scale": SCALE,
     "twinkle": TWINKLE,
@@ -224,4 +272,9 @@ SONGS = {
     "jingle_bells": JINGLE,
     "starlight": STARLIGHT,
     "digital_heart": DIGITAL_HEART,
+    "city_lights": CITY_LIGHTS,
+    "paper_boats": PAPER_BOATS,
 }
+
+#: Songs that carry a full instrumental arrangement.
+BAND_SONGS = [name for name, s in SONGS.items() if s.get("chords")]

@@ -111,10 +111,10 @@
   .lbl{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);
      margin-bottom:6px}
   .lbl code{color:var(--cyan);font-size:11px;letter-spacing:0}
-  textarea#score{flex:1;min-height:190px;background:#0c0c14;color:var(--text);
+  textarea#score,textarea#chords{flex:1;min-height:150px;background:#0c0c14;color:var(--text);
      border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px;
      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;resize:vertical}
-  textarea#score:focus{outline:none;border-color:var(--gold);box-shadow:var(--glow)}
+  textarea#score:focus,textarea#chords:focus{outline:none;border-color:var(--gold);box-shadow:var(--glow)}
   #songPick{margin-bottom:2px}
   button.go.wide{width:100%;margin-top:14px;padding:13px}
   #singCtrls .ctrl{margin-bottom:11px}
@@ -144,6 +144,8 @@
           <select id="songPick"></select>
           <label class="lbl" style="margin-top:10px">Score — <code>word NOTE:beats</code></label>
           <textarea id="score" spellcheck="false"></textarea>
+          <label class="lbl" style="margin-top:10px">Band — <code>CHORD beats</code> (blank = voice only)</label>
+          <textarea id="chords" spellcheck="false" style="min-height:70px"></textarea>
         </div>
         <div class="songcol narrow" id="singCtrls"></div>
       </div>
@@ -410,6 +412,7 @@ const SING_SCHEMA=[
   ["formant_shift","range","Voice size (formants)",{min:.85,max:1.3,step:.01}],
   ["breath","range","Breathiness",{min:-.5,max:.5,step:.01}],
   ["room","range","Room",{min:0,max:.4,step:.01}],
+  ["backing_level","range","Band level",{min:0,max:1,step:.01}],
 ];
 let SMETA=null, SVALS={}, sBlobUrl=null;
 
@@ -433,7 +436,8 @@ function buildSing(){
   }
 }
 
-function singPayload(){ return {...SVALS, score:$("score").value}; }
+function singPayload(){ return {...SVALS, score:$("score").value,
+                                chords:$("chords").value}; }
 
 async function singNow(){
   const btn=$("singGo"); btn.disabled=true; const old=btn.textContent;
@@ -471,6 +475,7 @@ async function singDownload(f32){
 function loadSong(name){
   const s=SMETA.songs.find(x=>x.name===name); if(!s) return;
   $("score").value=s.score;
+  $("chords").value=s.chords||"";
   SVALS.bpm=s.bpm;
   buildSing();
 }

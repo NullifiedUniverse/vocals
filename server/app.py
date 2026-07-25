@@ -109,12 +109,33 @@ def sing_meta():
     # A list (not a dict) so the curated song order survives JSON serialisation.
     return jsonify({
         "songs": [{"name": name, "score": format_score(s["score"]),
-                   "bpm": s["bpm"]} for name, s in SONGS.items()],
+                   "bpm": s["bpm"], "chords": _chart_text(s.get("chords"))}
+                  for name, s in SONGS.items()],
         "neural": voice.available(),
         "voice_model": voice.DEFAULT_VOICE,
         "defaults": {"bpm": 108, "formant_shift": 1.0, "breath": 0.0,
-                     "room": 0.08},
+                     "room": 0.08, "backing_level": 0.42},
     })
+
+
+def _chart_text(chart):
+    """Chord chart -> the editable one-per-line text the UI shows."""
+    return "\n".join(f"{c} {int(b)}" for c, b in chart) if chart else ""
+
+
+def _parse_chart(text):
+    """Editable chart text -> [(chord, beats)]; raises ValueError with a line."""
+    chart = []
+    for i, raw in enumerate(str(text or "").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        try:
+            chart.append((parts[0], float(parts[1]) if len(parts) > 1 else 4.0))
+        except ValueError:
+            raise ValueError(f"chords line {i}: bad length {parts[1]!r}")
+    return chart
 
 
 def _sing_render(payload):
@@ -127,9 +148,13 @@ def _sing_render(payload):
         formant_shift=float(p.get("formant_shift", 1.0)),
         breath=float(p.get("breath", 0.0)),
     )
+    chords = _parse_chart(p.get("chords", ""))
     t0 = time.time()
     stereo = singer.render_song(score, sr=sr, bpm=bpm,
-                                room=float(p.get("room", 0.08)), **kw)
+                                room=float(p.get("room", 0.08)),
+                                chords=chords or None,
+                                backing_level=float(p.get("backing_level", 0.42)),
+                                **kw)
     # Quality is reported from the dry signal (reverb smears pitch tracking).
     dry = singer.sing(score, sr, bpm, **kw)
     rep = quality.summarize(dry, sr, note_timeline(score, bpm))

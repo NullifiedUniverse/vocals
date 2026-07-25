@@ -23,7 +23,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from daftdsp import quality, singer, songs  # noqa: E402
+from daftdsp import arrangement, quality, singer, songs  # noqa: E402
 
 SR = singer.DEFAULT_SR
 SHORT = [("twinkle", [("C4", 1), ("C4", 1)]), ("little", [("G4", 1), ("G4", 1)]),
@@ -190,6 +190,61 @@ def test_phrase_has_body_not_just_treble():
     bands = quality.spectral_balance(y, SR)["bands"]
     low = bands["250-500"] + bands["80-250"]
     assert low > 8.0, f"too little body: {low}% below 500 Hz"
+
+
+# ---------------------------------------------------------------------------
+# 4b. instrumental arrangement
+# ---------------------------------------------------------------------------
+
+CHART = [("Am", 4), ("F", 4), ("C", 4), ("G", 4)]
+
+
+def test_chords_parse_to_the_right_notes():
+    root, notes = arrangement.parse_chord("Am", octave=3)
+    assert [n - root for n in notes] == [0, 3, 7], "A minor"
+    _, maj7 = arrangement.parse_chord("Cmaj7", octave=3)
+    assert [n - maj7[0] for n in maj7] == [0, 4, 7, 11]
+    assert arrangement.parse_chord("-")[1] == []      # no-chord is allowed
+
+
+def test_backing_is_well_formed_and_in_time():
+    sr = SR
+    band = arrangement.render_backing(CHART, 100, sr)
+    beats = sum(b for _, b in CHART)
+    expected = beats * 60.0 / 100
+    assert abs(band.size / sr - expected) < 0.6, "backing length must match chart"
+    h = quality.headroom(band)
+    assert h["finite"] and h["clipped"] == 0 and abs(h["dc"]) < 0.01
+    assert h["rms"] > 0.02, "backing is silent"
+
+
+def test_each_instrument_renders():
+    for part in (arrangement.keys(CHART, 100, SR),
+                 arrangement.bass(CHART, 100, SR),
+                 arrangement.drums(16, 100, SR)):
+        assert part.size > 0 and np.all(np.isfinite(part))
+        assert np.max(np.abs(part)) > 1e-3, "instrument produced no sound"
+
+
+def test_mix_keeps_the_voice_in_front():
+    """The band must be ducked under the vocal, not level with it."""
+    voice_only = _render(SHORT, SHORT_BPM)
+    band = arrangement.render_backing(CHART, SHORT_BPM, SR)
+    mixed = arrangement.mix(voice_only, band, SR)
+    assert np.all(np.isfinite(mixed)) and quality.headroom(mixed)["clipped"] == 0
+    # With the voice present the band is pushed down, so the mix must not be
+    # dominated by the backing.
+    loud_band = arrangement.mix(voice_only, band, SR, backing_level=1.0)
+    assert quality.headroom(mixed)["rms"] <= quality.headroom(loud_band)["rms"] * 1.15
+
+
+def test_band_songs_render_end_to_end():
+    for name in songs.BAND_SONGS:
+        s = songs.SONGS[name]
+        out = singer.render_song(s["score"], SR, bpm=s["bpm"], chords=s["chords"])
+        assert np.all(np.isfinite(out)), name
+        assert quality.headroom(out)["clipped"] == 0, name
+        assert out.size / SR > 5.0, f"{name} is suspiciously short"
 
 
 # ---------------------------------------------------------------------------

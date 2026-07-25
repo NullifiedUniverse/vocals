@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import util, voice, world
+from . import arrangement, util, voice, world
 from .biquad import biquad_fft, high_shelf, highpass, low_shelf, peaking
 from .util import midi_to_freq, note_to_midi
 
@@ -486,18 +486,24 @@ def _voice_timbre(x, sr):
 
 
 def render_song(score, sr=DEFAULT_SR, bpm=100, voice_name=voice.DEFAULT_VOICE,
-                room=0.08, **kw):
+                room=0.08, chords=None, backing_level=0.42, **kw):
     """Render a song: sing -> restore body -> a touch of room.
 
     ``room`` is a small early-reflection blend so the voice is not clinically
-    dry; set it to 0 for the raw voice.  Output is mono -- a single singer is a
-    point source, and widening one only makes it sound artificial.
+    dry; set it to 0 for the raw voice.  The voice itself is mono -- a single
+    singer is a point source, and widening one only makes it sound artificial.
+
+    Pass ``chords`` (a chart of ``(chord, beats)``) to put a band under it: keys,
+    bass and drums, ducked by the vocal so the words stay in front.
     """
     y = sing(score, sr, bpm, voice_name, **kw)
     y = _voice_timbre(y, sr)
     if room > 0:
         y = _room(y, sr, room)
     y = util.normalize_percentile(y, target=0.82)
+    if chords:
+        band = arrangement.render_backing(chords, bpm, sr)
+        return arrangement.mix(y, band, sr, backing_level=backing_level)
     return util.soft_limit(y, 0.97)
 
 
